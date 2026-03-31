@@ -1,0 +1,15 @@
+=== MNQ 1m Train Data Statistics ===
+
+Period        : 2022-01-03 to 2024-06-28
+Total bars    : 247,035
+Trading days  : 643
+
+--- Daily Range (in ticks, MNQ tick=0.25 pts) ---
+  Mean          : 966.7 ticks
+  Median        : 866.0 ticks
+  10th percentile: 498.4 ticks
+  90th percentile: 1564.4 ticks
+
+--- Daily Volume ---
+  Mean          : 881,287
+  Median        : 870,232
