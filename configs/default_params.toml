@@ -1,0 +1,42 @@
+[general]
+random_seed = 42
+
+# [simulator] section reserved for future use (e.g. starting_equity overrides).
+# Not consumed by current code - MFFState always starts at equity 0.0.
+
+[strategy.orb.shared]
+range_minutes = 15
+max_trades_day = 2
+buffer_ticks = 2.0
+volume_threshold = 0.0
+
+[strategy.orb.eval]
+stop_ticks = 40.0
+target_ticks = 60.0
+contracts = 10
+daily_stop = -750.0
+daily_target = 600.0
+
+[strategy.orb.funded]
+stop_ticks = 35.0
+target_ticks = 80.0
+contracts = 20
+daily_stop = -1000.0
+daily_target = 900.0
+
+[slippage]
+stop_penalty = 1.5
+atr_period = 14
+trailing_atr_days = 5
+
+[monte_carlo]
+n_simulations = 10_000
+block_mode = "daily"       # REQUIRED for real ORB backtests with structured daily lifecycle logs
+                           # "fixed" is only for synthetic or legacy flat-PNL runs
+block_size_min = 5         # In daily mode: calendar-day block length; in fixed mode: trade block length
+block_size_max = 10        # In daily mode: calendar-day block length; in fixed mode: trade block length
+
+[stress_test]
+slippage_multiplier = 3.0
+drawdown_buffer = 0.8
+worst_day_injection = true
