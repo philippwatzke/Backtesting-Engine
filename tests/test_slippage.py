@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 from numba import njit
 
-from propfirm.market.slippage import compute_slippage, build_slippage_lookup
+from propfirm.market.slippage import compute_slippage, build_slippage_lookup, estimate_baseline_ticks
 
 
 class TestComputeSlippage:
@@ -60,3 +60,20 @@ class TestBuildSlippageLookup:
         missing = tmp_path / "missing_profile.parquet"
         with pytest.raises(FileNotFoundError):
             build_slippage_lookup(missing, require_file=True)
+
+
+class TestEstimateBaselineTicks:
+    def test_uses_small_fraction_of_lower_quantile(self):
+        values = np.array([10.0, 20.0, 30.0, 40.0, 50.0], dtype=np.float64)
+        result = estimate_baseline_ticks(values, quantile=0.2, fraction=0.1, floor_ticks=1.0, cap_ticks=4.0)
+        assert np.isclose(result, 1.8)
+
+    def test_respects_floor(self):
+        values = np.array([1.0, 2.0, 3.0], dtype=np.float64)
+        result = estimate_baseline_ticks(values, quantile=0.1, fraction=0.05, floor_ticks=1.0, cap_ticks=4.0)
+        assert result == 1.0
+
+    def test_respects_cap(self):
+        values = np.array([40.0, 50.0, 60.0], dtype=np.float64)
+        result = estimate_baseline_ticks(values, quantile=1.0, fraction=0.2, floor_ticks=1.0, cap_ticks=4.0)
+        assert result == 4.0
