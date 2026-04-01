@@ -9,6 +9,33 @@ RTH_OPEN_MINUTE = 9 * 60 + 30
 REQUIRED_COLUMNS = ("open", "high", "low", "close", "volume")
 
 
+def _filter_complete_rth_sessions(df: pd.DataFrame) -> pd.DataFrame:
+    """Keep only complete, gap-free RTH sessions.
+
+    The engine assumes each retained trading day contains a complete
+    09:30-15:59 ET minute grid. Missing bars can break ORB range logic
+    and prevent the hard-close bar from ever being seen. Incomplete or
+    gapped sessions are therefore excluded from the backtest universe.
+    """
+    keep = []
+    for session_date, session_df in df.groupby(df.index.date, sort=True):
+        expected_start = (
+            pd.Timestamp(session_date)
+            .tz_localize(SESSION_TZ)
+            + pd.Timedelta(hours=9, minutes=30)
+        )
+        expected_index = pd.date_range(
+            start=expected_start,
+            periods=BARS_PER_RTH_SESSION,
+            freq="min",
+        )
+        if len(session_df) == BARS_PER_RTH_SESSION and session_df.index.equals(expected_index):
+            keep.append(session_df)
+    if not keep:
+        raise ValueError("No complete RTH sessions remain after filtering")
+    return pd.concat(keep, axis=0)
+
+
 def _prepare_session_frame(df: pd.DataFrame) -> pd.DataFrame:
     """Normalize bars into a strict RTH-only America/New_York session frame."""
     if not isinstance(df.index, pd.DatetimeIndex):
@@ -28,7 +55,7 @@ def _prepare_session_frame(df: pd.DataFrame) -> pd.DataFrame:
         raise ValueError("No RTH bars remain after timezone conversion/filtering")
     if not df.index.is_monotonic_increasing:
         raise ValueError("Prepared session index must be monotonic increasing")
-    return df
+    return _filter_complete_rth_sessions(df)
 
 
 def compute_minute_of_day(index: pd.DatetimeIndex) -> np.ndarray:

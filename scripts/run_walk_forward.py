@@ -1,19 +1,20 @@
 #!/usr/bin/env python
 """Run walk-forward analysis on real historical data."""
 import argparse
-import json
-import numpy as np
 from pathlib import Path
 
 from propfirm.io.config import load_mff_config, load_params_config, build_phase_params
 from propfirm.market.data_loader import load_session_data
 from propfirm.market.slippage import build_slippage_lookup
-from propfirm.optim.walk_forward import run_walk_forward
+from propfirm.optim.walk_forward import run_walk_forward, _serialize_param_grid
 from propfirm.io.reporting import build_report, save_report
 from propfirm.core.types import (
     PARAMS_STOP_TICKS, PARAMS_TARGET_TICKS, PARAMS_CONTRACTS,
     PARAMS_DAILY_STOP,
 )
+
+MC_EVAL_TARGET_LENGTH = 200
+MC_FUNDED_TARGET_LENGTH = 300
 
 
 def main():
@@ -47,7 +48,10 @@ def main():
         atr_period=slip_cfg["atr_period"],
         trailing_atr_days=slip_cfg["trailing_atr_days"],
     )
-    slippage_lookup = build_slippage_lookup(Path("data/slippage/slippage_profile.parquet"))
+    slippage_lookup = build_slippage_lookup(
+        Path("data/slippage/slippage_profile.parquet"),
+        require_file=True,
+    )
 
     base_params_eval = build_phase_params(
         orb_shared, orb_eval, slip_cfg, mff_cfg["instrument"]["commission_per_side"]
@@ -85,6 +89,8 @@ def main():
         n_mc_sims=n_mc_sims,
         mc_block_min=mc_cfg["block_size_min"],
         mc_block_max=mc_cfg["block_size_max"],
+        mc_eval_target_length=MC_EVAL_TARGET_LENGTH,
+        mc_funded_target_length=MC_FUNDED_TARGET_LENGTH,
         seed=seed,
         n_workers=args.n_workers,
     )
@@ -110,6 +116,7 @@ def main():
             "eval": orb_eval,
             "funded": orb_funded,
             "shared": orb_shared,
+            "walk_forward_param_grid": _serialize_param_grid(param_grid),
             "walk_forward_results": results,
         },
         mc_result=None,
@@ -130,6 +137,8 @@ def main():
         "mc_n_sims": n_mc_sims,
         "mc_block_size_min": mc_cfg["block_size_min"],
         "mc_block_size_max": mc_cfg["block_size_max"],
+        "mc_eval_target_length": MC_EVAL_TARGET_LENGTH,
+        "mc_funded_target_length": MC_FUNDED_TARGET_LENGTH,
         "train_days": args.train_days,
         "test_days": args.test_days,
         "step_days": args.step_days,

@@ -36,7 +36,10 @@ def main():
         trailing_atr_days=slip_cfg["trailing_atr_days"],
     )
 
-    slippage_lookup = build_slippage_lookup(Path("data/slippage/slippage_profile.parquet"))
+    slippage_lookup = build_slippage_lookup(
+        Path("data/slippage/slippage_profile.parquet"),
+        require_file=True,
+    )
 
     params_eval = build_phase_params(
         orb_shared, orb_eval, slip_cfg, mff_cfg["instrument"]["commission_per_side"]

@@ -55,3 +55,8 @@ class TestBuildSlippageLookup:
     def test_open_higher_than_midday(self):
         lookup = build_slippage_lookup(None)
         assert lookup[0] > lookup[120]
+
+    def test_require_file_raises_when_profile_missing(self, tmp_path):
+        missing = tmp_path / "missing_profile.parquet"
+        with pytest.raises(FileNotFoundError):
+            build_slippage_lookup(missing, require_file=True)

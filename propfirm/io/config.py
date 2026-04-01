@@ -31,6 +31,21 @@ def _require_non_negative(value, ctx: str) -> None:
         raise ValueError(f"{ctx} must be >= 0")
 
 
+def _require_int_like(value, ctx: str) -> None:
+    if isinstance(value, bool) or int(value) != value:
+        raise ValueError(f"{ctx} must be an integer")
+
+
+def _require_positive_int(value, ctx: str) -> None:
+    _require_positive(value, ctx)
+    _require_int_like(value, ctx)
+
+
+def _require_non_negative_int(value, ctx: str) -> None:
+    _require_non_negative(value, ctx)
+    _require_int_like(value, ctx)
+
+
 def _require_pct(value, ctx: str) -> None:
     if not (0.0 <= value <= 1.0):
         raise ValueError(f"{ctx} must be between 0 and 1")
@@ -50,8 +65,8 @@ def _validate_mff_config(cfg: dict) -> None:
     _require_positive(eval_cfg["profit_target"], "eval.profit_target")
     _require_positive(eval_cfg["max_loss_limit"], "eval.max_loss_limit")
     _require_pct(eval_cfg["consistency_max_pct"], "eval.consistency_max_pct")
-    _require_positive(eval_cfg["min_trading_days"], "eval.min_trading_days")
-    _require_positive(eval_cfg["max_contracts"], "eval.max_contracts")
+    _require_positive_int(eval_cfg["min_trading_days"], "eval.min_trading_days")
+    _require_positive_int(eval_cfg["max_contracts"], "eval.max_contracts")
 
     _require_keys(
         funded_cfg,
@@ -65,7 +80,7 @@ def _validate_mff_config(cfg: dict) -> None:
     _require_positive(funded_cfg["max_loss_limit"], "funded.max_loss_limit")
     _require_positive(funded_cfg["mll_frozen_value"], "funded.mll_frozen_value")
     _require_non_negative(funded_cfg["winning_day_threshold"], "funded.winning_day_threshold")
-    _require_positive(funded_cfg["payout_winning_days_required"], "funded.payout_winning_days_required")
+    _require_positive_int(funded_cfg["payout_winning_days_required"], "funded.payout_winning_days_required")
     _require_pct(funded_cfg["payout_max_pct"], "funded.payout_max_pct")
     _require_positive(funded_cfg["payout_cap"], "funded.payout_cap")
     _require_non_negative(funded_cfg["payout_min_gross"], "funded.payout_min_gross")
@@ -84,7 +99,7 @@ def _validate_mff_config(cfg: dict) -> None:
         _require_keys(tier, ["min_profit", "max_profit", "max_contracts"], f"funded.scaling.tiers[{idx}]")
         if tier["min_profit"] > tier["max_profit"]:
             raise ValueError(f"funded.scaling.tiers[{idx}] has min_profit > max_profit")
-        _require_positive(tier["max_contracts"], f"funded.scaling.tiers[{idx}].max_contracts")
+        _require_positive_int(tier["max_contracts"], f"funded.scaling.tiers[{idx}].max_contracts")
         if prev_max is not None and tier["min_profit"] < prev_max:
             raise ValueError("funded.scaling.tiers must be sorted and non-overlapping")
         if prev_max is not None and tier["min_profit"] > prev_max:
@@ -103,7 +118,7 @@ def _validate_phase_block(phase_cfg: dict, ctx: str) -> None:
     _require_keys(phase_cfg, ["stop_ticks", "target_ticks", "contracts", "daily_stop", "daily_target"], ctx)
     _require_positive(phase_cfg["stop_ticks"], f"{ctx}.stop_ticks")
     _require_positive(phase_cfg["target_ticks"], f"{ctx}.target_ticks")
-    _require_positive(phase_cfg["contracts"], f"{ctx}.contracts")
+    _require_positive_int(phase_cfg["contracts"], f"{ctx}.contracts")
     if phase_cfg["daily_stop"] >= 0:
         raise ValueError(f"{ctx}.daily_stop must be negative")
     _require_positive(phase_cfg["daily_target"], f"{ctx}.daily_target")
@@ -112,7 +127,7 @@ def _validate_phase_block(phase_cfg: dict, ctx: str) -> None:
 def _validate_params_config(cfg: dict) -> None:
     _require_keys(cfg, ["general", "strategy", "slippage", "monte_carlo"], "root")
     _require_keys(cfg["general"], ["random_seed"], "general")
-    _require_non_negative(cfg["general"]["random_seed"], "general.random_seed")
+    _require_non_negative_int(cfg["general"]["random_seed"], "general.random_seed")
 
     strategy_cfg = cfg["strategy"]
     _require_keys(strategy_cfg, ["orb"], "strategy")
@@ -121,8 +136,8 @@ def _validate_params_config(cfg: dict) -> None:
 
     shared_cfg = orb_cfg["shared"]
     _require_keys(shared_cfg, ["range_minutes", "max_trades_day", "buffer_ticks", "volume_threshold"], "strategy.orb.shared")
-    _require_positive(shared_cfg["range_minutes"], "strategy.orb.shared.range_minutes")
-    _require_positive(shared_cfg["max_trades_day"], "strategy.orb.shared.max_trades_day")
+    _require_positive_int(shared_cfg["range_minutes"], "strategy.orb.shared.range_minutes")
+    _require_positive_int(shared_cfg["max_trades_day"], "strategy.orb.shared.max_trades_day")
     _require_non_negative(shared_cfg["buffer_ticks"], "strategy.orb.shared.buffer_ticks")
     _require_non_negative(shared_cfg["volume_threshold"], "strategy.orb.shared.volume_threshold")
 
@@ -132,16 +147,16 @@ def _validate_params_config(cfg: dict) -> None:
     slippage_cfg = cfg["slippage"]
     _require_keys(slippage_cfg, ["stop_penalty", "atr_period", "trailing_atr_days"], "slippage")
     _require_positive(slippage_cfg["stop_penalty"], "slippage.stop_penalty")
-    _require_positive(slippage_cfg["atr_period"], "slippage.atr_period")
-    _require_positive(slippage_cfg["trailing_atr_days"], "slippage.trailing_atr_days")
+    _require_positive_int(slippage_cfg["atr_period"], "slippage.atr_period")
+    _require_positive_int(slippage_cfg["trailing_atr_days"], "slippage.trailing_atr_days")
 
     mc_cfg = cfg["monte_carlo"]
     _require_keys(mc_cfg, ["n_simulations", "block_mode", "block_size_min", "block_size_max"], "monte_carlo")
-    _require_positive(mc_cfg["n_simulations"], "monte_carlo.n_simulations")
+    _require_positive_int(mc_cfg["n_simulations"], "monte_carlo.n_simulations")
     if mc_cfg["block_mode"] not in {"daily", "fixed"}:
         raise ValueError("monte_carlo.block_mode must be 'daily' or 'fixed'")
-    _require_positive(mc_cfg["block_size_min"], "monte_carlo.block_size_min")
-    _require_positive(mc_cfg["block_size_max"], "monte_carlo.block_size_max")
+    _require_positive_int(mc_cfg["block_size_min"], "monte_carlo.block_size_min")
+    _require_positive_int(mc_cfg["block_size_max"], "monte_carlo.block_size_max")
     if mc_cfg["block_size_min"] > mc_cfg["block_size_max"]:
         raise ValueError("monte_carlo.block_size_min must be <= block_size_max")
 

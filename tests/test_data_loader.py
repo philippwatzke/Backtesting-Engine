@@ -65,6 +65,43 @@ class TestLoadSessionData:
             load_session_data(path)
 
     def test_sorts_converts_and_filters_to_rth(self, tmp_path):
+        idx = pd.date_range(
+            "2022-01-03 14:30:00+00:00",
+            periods=390,
+            freq="min",
+            tz="UTC",
+        )
+        df = pd.DataFrame(
+            {
+                "open": np.linspace(1.0, 2.0, 390),
+                "high": np.linspace(1.1, 2.1, 390),
+                "low": np.linspace(0.9, 1.9, 390),
+                "close": np.linspace(1.0, 2.0, 390),
+                "volume": np.full(390, 10),
+            },
+            index=idx,
+        )
+        extra = pd.DataFrame(
+            {
+                "open": [0.8, 2.2],
+                "high": [0.9, 2.3],
+                "low": [0.7, 2.1],
+                "close": [0.8, 2.2],
+                "volume": [5, 5],
+            },
+            index=pd.DatetimeIndex(
+                ["2022-01-03 13:00:00+00:00", "2022-01-03 21:05:00+00:00"]
+            ),
+        )
+        combined = pd.concat([df.iloc[[1, 0]], extra, df.iloc[2:]])
+        path = tmp_path / "utc_unsorted.parquet"
+        combined.to_parquet(path)
+        loaded = load_session_data(path)
+        np.testing.assert_array_equal(loaded["minute_of_day"], np.arange(390, dtype=np.int16))
+        assert len(loaded["open"]) == 390
+        assert loaded["session_dates"] == ["2022-01-03"]
+
+    def test_rejects_incomplete_rth_session(self, tmp_path):
         idx = pd.DatetimeIndex(
             [
                 "2022-01-03 14:31:00+00:00",  # 09:31 ET
@@ -86,10 +123,8 @@ class TestLoadSessionData:
         )
         path = tmp_path / "utc_unsorted.parquet"
         df.to_parquet(path)
-        loaded = load_session_data(path)
-        np.testing.assert_array_equal(loaded["minute_of_day"], np.array([0, 1, 389], dtype=np.int16))
-        assert len(loaded["open"]) == 3
-        assert loaded["session_dates"] == ["2022-01-03"]
+        with pytest.raises(ValueError, match="No complete RTH sessions remain"):
+            load_session_data(path)
 
 
 class TestComputeMinuteOfDay:

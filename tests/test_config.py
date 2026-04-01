@@ -176,6 +176,39 @@ class TestLoadMFFConfig:
         with pytest.raises(ValueError):
             load_mff_config(bad_cfg)
 
+    def test_rejects_non_integer_min_trading_days(self, tmp_path):
+        bad_cfg = tmp_path / "bad_mff_float_day.toml"
+        bad_cfg.write_text(
+            "[eval]\n"
+            "profit_target = 3000.0\n"
+            "max_loss_limit = 2000.0\n"
+            "consistency_max_pct = 0.50\n"
+            "min_trading_days = 2.5\n"
+            "max_contracts = 50\n\n"
+            "[funded]\n"
+            "max_loss_limit = 2000.0\n"
+            "mll_frozen_value = 100.0\n"
+            "winning_day_threshold = 150.0\n"
+            "payout_winning_days_required = 5\n"
+            "payout_max_pct = 0.50\n"
+            "payout_cap = 5000.0\n"
+            "payout_min_gross = 250.0\n"
+            "profit_split_trader = 0.80\n"
+            "eval_cost = 107.0\n\n"
+            "[[funded.scaling.tiers]]\n"
+            "min_profit = -1e9\n"
+            "max_profit = 1e9\n"
+            "max_contracts = 20\n\n"
+            "[instrument]\n"
+            "name = \"MNQ\"\n"
+            "tick_size = 0.25\n"
+            "tick_value = 0.50\n"
+            "commission_per_side = 0.54\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="integer"):
+            load_mff_config(bad_cfg)
+
 
 class TestLoadParamsConfig:
     def test_loads_random_seed(self):
@@ -297,4 +330,40 @@ class TestLoadParamsConfig:
             encoding="utf-8",
         )
         with pytest.raises(ValueError):
+            load_params_config(bad_cfg)
+
+    def test_rejects_non_integer_contracts(self, tmp_path):
+        bad_cfg = tmp_path / "bad_params_float_contracts.toml"
+        bad_cfg.write_text(
+            "[general]\n"
+            "random_seed = 42\n\n"
+            "[strategy.orb.shared]\n"
+            "range_minutes = 15\n"
+            "max_trades_day = 2\n"
+            "buffer_ticks = 2.0\n"
+            "volume_threshold = 0.0\n\n"
+            "[strategy.orb.eval]\n"
+            "stop_ticks = 40.0\n"
+            "target_ticks = 60.0\n"
+            "contracts = 10.5\n"
+            "daily_stop = -750.0\n"
+            "daily_target = 600.0\n\n"
+            "[strategy.orb.funded]\n"
+            "stop_ticks = 35.0\n"
+            "target_ticks = 80.0\n"
+            "contracts = 20\n"
+            "daily_stop = -1000.0\n"
+            "daily_target = 900.0\n\n"
+            "[slippage]\n"
+            "stop_penalty = 1.5\n"
+            "atr_period = 14\n"
+            "trailing_atr_days = 5\n\n"
+            "[monte_carlo]\n"
+            "n_simulations = 1000\n"
+            "block_mode = \"daily\"\n"
+            "block_size_min = 5\n"
+            "block_size_max = 10\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="integer"):
             load_params_config(bad_cfg)

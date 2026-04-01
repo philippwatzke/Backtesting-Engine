@@ -6,6 +6,7 @@ from unittest.mock import patch
 from propfirm.optim.walk_forward import (
     _backtest_param_set,
     _build_params_array,
+    _serialize_param_grid,
     _serialize_param_overrides,
     run_walk_forward,
 )
@@ -103,6 +104,19 @@ class TestSerializeParamOverrides:
         assert result == {
             "eval": {"stop_ticks": 30.0},
             "funded": {"contracts": 20.0},
+        }
+        json.dumps(result)
+
+
+class TestSerializeParamGrid:
+    def test_returns_json_safe_nested_dict_of_lists(self):
+        result = _serialize_param_grid({
+            ("eval", PARAMS_STOP_TICKS): [30.0, 40.0],
+            ("funded", PARAMS_CONTRACTS): [10.0, 20.0],
+        })
+        assert result == {
+            "eval": {"stop_ticks": [30.0, 40.0]},
+            "funded": {"contracts": [10.0, 20.0]},
         }
         json.dumps(result)
 
@@ -287,7 +301,9 @@ class TestRunWalkForward:
                 synthetic_session, slippage_lookup,
                 base_params, base_params, {("eval", PARAMS_STOP_TICKS): [40.0]}, make_mff_config(),
                 window_train_days=10, window_test_days=5, step_days=5,
-                n_mc_sims=11, mc_block_min=7, mc_block_max=9, seed=42, n_workers=1,
+                n_mc_sims=11, mc_block_min=7, mc_block_max=9,
+                mc_eval_target_length=33, mc_funded_target_length=44,
+                seed=42, n_workers=1,
             )
 
         assert mock_mc.call_count >= 1
@@ -296,3 +312,5 @@ class TestRunWalkForward:
             assert call.kwargs["block_min"] == 7
             assert call.kwargs["block_max"] == 9
             assert call.kwargs["n_sims"] == 11
+            assert call.kwargs["eval_target_length"] == 33
+            assert call.kwargs["funded_target_length"] == 44

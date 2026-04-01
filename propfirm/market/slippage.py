@@ -40,17 +40,24 @@ _DEFAULT_BUCKETS = [
 ]
 
 
-def build_slippage_lookup(profile_path: Path | None) -> np.ndarray:
+def build_slippage_lookup(profile_path: Path | None, require_file: bool = False) -> np.ndarray:
     """Build a 390-element slippage lookup array (one per RTH minute)."""
     lookup = np.ones(390, dtype=np.float64)
-    if profile_path is not None and Path(profile_path).exists():
-        import pandas as pd
-        df = pd.read_parquet(profile_path)
-        for _, row in df.iterrows():
-            start = int(row["bucket_start"])
-            end = int(row["bucket_end"])
-            lookup[start:end] = row["baseline_ticks"]
-    else:
-        for start, end, baseline in _DEFAULT_BUCKETS:
-            lookup[start:end] = baseline
+    if profile_path is not None:
+        profile_path = Path(profile_path)
+        if profile_path.exists():
+            import pandas as pd
+            df = pd.read_parquet(profile_path)
+            for _, row in df.iterrows():
+                start = int(row["bucket_start"])
+                end = int(row["bucket_end"])
+                lookup[start:end] = row["baseline_ticks"]
+            return lookup
+        if require_file:
+            raise FileNotFoundError(
+                f"Slippage profile not found: {profile_path}. "
+                "Run scripts/calibrate_slippage.py first."
+            )
+    for start, end, baseline in _DEFAULT_BUCKETS:
+        lookup[start:end] = baseline
     return lookup

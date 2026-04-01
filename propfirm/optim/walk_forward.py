@@ -131,6 +131,19 @@ def _serialize_param_overrides(overrides: dict | None) -> dict | None:
     return result
 
 
+def _serialize_param_grid(param_grid: dict[tuple[str, int], list[float]]) -> dict:
+    result = {"eval": {}, "funded": {}}
+    for (phase, param_idx), values in param_grid.items():
+        result[phase][PARAM_INDEX_TO_NAME.get(param_idx, f"param_{param_idx}")] = [
+            float(value) for value in values
+        ]
+    if not result["eval"]:
+        result.pop("eval")
+    if not result["funded"]:
+        result.pop("funded")
+    return result
+
+
 def run_walk_forward(
     session_data: dict,
     slippage_lookup: np.ndarray,
@@ -144,6 +157,8 @@ def run_walk_forward(
     n_mc_sims: int = 500,
     mc_block_min: int = 5,
     mc_block_max: int = 10,
+    mc_eval_target_length: int = 200,
+    mc_funded_target_length: int = 300,
     seed: int = 42,
     n_workers: int = 1,
 ) -> list[dict]:
@@ -186,6 +201,8 @@ def run_walk_forward(
                 block_mode="daily",
                 block_min=mc_block_min,
                 block_max=mc_block_max,
+                eval_target_length=mc_eval_target_length,
+                funded_target_length=mc_funded_target_length,
             )
 
             if mc_result.nve > best_nve:
@@ -211,6 +228,8 @@ def run_walk_forward(
                         block_mode="daily",
                         block_min=mc_block_min,
                         block_max=mc_block_max,
+                        eval_target_length=mc_eval_target_length,
+                        funded_target_length=mc_funded_target_length,
                     )
                     oos_nve = oos_mc.nve
                     oos_payout_rate = oos_mc.payout_rate
