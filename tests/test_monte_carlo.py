@@ -166,10 +166,12 @@ class TestRunMonteCarlo:
                             n_sims=10, seed=42, n_workers=1, block_mode="fixed")
 
     def test_drawdown_uses_full_lifecycle_max(self):
-        eval_seq = np.array([2500.0, -400.0, 1000.0], dtype=np.float64)
+        # Eval: 4 days, drawdown of 300 between day 1-2, passes on day 4
+        # consistency: max_single=1500, total=3200, ratio=46.9% <= 50% OK
+        eval_seq = np.array([1500.0, -300.0, 1500.0, 500.0], dtype=np.float64)
         funded_seq = np.array([200.0, 200.0, 200.0, 200.0, 200.0], dtype=np.float64)
         result = _simulate_single_path(eval_seq, funded_seq, make_mff_config(),
                                         eval_trades_per_day=1, funded_trades_per_day=1)
         assert result["eval_passed"] == True
         assert result["payout_net"] > 0.0
-        assert result["drawdown"] >= 400.0
+        assert result["drawdown"] >= 300.0

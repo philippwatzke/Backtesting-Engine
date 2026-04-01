@@ -80,7 +80,8 @@ def _simulate_single_path(eval_sequence, funded_sequence, mff_config,
     eval_cfg = mff_config["eval"]
     if eval_result == "exhausted":
         if (state.total_profit >= eval_cfg["profit_target"]
-                and state.trading_days >= eval_cfg["min_trading_days"]):
+                and state.trading_days >= eval_cfg["min_trading_days"]
+                and state.consistency_ok()):
             eval_result = "passed"
     if eval_result != "passed":
         return {"eval_passed": False, "funded_survived": False,
