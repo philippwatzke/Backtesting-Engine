@@ -1,0 +1,76 @@
+# Triple KAMA + MACD — MNQ / 15-minute configuration
+# -------------------------------------------------------
+# Instrument: Micro Nasdaq (MNQ)
+#   tick_size  = 0.25
+#   tick_value = 0.50
+#   commission = 0.54 per side
+# Timeframe: 15-minute bars (timeframe_minutes = 15)
+
+[general]
+random_seed = 42
+
+[instrument]
+tick_size  = 0.25
+tick_value = 0.50
+commission_per_side = 0.54   # USD per contract per side
+
+[session]
+session_start = "09:30"
+session_end   = "15:59"
+timeframe_minutes = 15
+
+[strategy.kama_macd]
+# KAMA periods
+kama_fast   = 8
+kama_mid    = 13
+kama_slow   = 21
+
+# MACD periods
+macd_fast   = 12
+macd_slow   = 26
+macd_signal = 9
+
+# ATR for dynamic stop
+atr_period       = 14
+atr_multiplier   = 1.0   # calibrated: 2.5 produced targets > typical daily range
+
+# Risk / reward
+rr_ratio         = 2.0
+
+# Signal-window: how many bars each sub-condition stays "fresh"
+signal_window    = 5
+
+# Warmup bars before first signal evaluation
+# KAMA-21 needs ~21 bars; MACD EWM converges in ~30; add safety margin
+warmup_bars      = 60
+
+[execution]
+contracts         = 1
+max_trades        = 2          # max intraday trades
+# time_stop_minute = minute offset from session open (same unit as minute_of_day).
+# For 15-min bars session_open=09:30:
+#   bar 0 = offset 0 (09:30), bar 1 = offset 15 (09:45), ..., bar 25 = offset 375 (15:45)
+#   360 = 15:30 ET  →  last eligible entry bar is bar 23 (offset 345 = 15:15)
+time_stop_minute  = 360        # no new entries at minute-offset >= 360 (= 15:30 ET)
+daily_stop        = -500.0     # USD — circuit-breaker
+daily_target      = 800.0      # USD — profit lock-in
+
+[slippage]
+stop_penalty      = 1.5
+extra_slippage_ticks = 0.0
+atr_period        = 14
+trailing_atr_days = 5
+
+[backtest]
+starting_equity   = 50_000.0
+
+[monte_carlo]
+n_simulations  = 10_000
+block_mode     = "daily"
+block_size_min = 5
+block_size_max = 10
+
+[stress_test]
+slippage_multiplier  = 3.0
+drawdown_buffer      = 0.8
+worst_day_injection  = true

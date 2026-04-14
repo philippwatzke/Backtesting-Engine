@@ -25,8 +25,12 @@ def make_config():
             "payout_max_pct": 0.50,
             "payout_cap": 5000.0,
             "payout_min_gross": 250.0,
+            "payout_min_net_profit_between_payouts": 500.0,
             "profit_split_trader": 0.80,
             "eval_cost": 107.0,
+            "inactivity_rule_calendar_days": 7,
+            "live_transition_payouts_required": 5,
+            "live_sim_cap_profit": 100000.0,
             "scaling": {
                 "tiers": [
                     {"min_profit": -1e9, "max_profit": 1500.0, "max_contracts": 20},
@@ -61,6 +65,14 @@ class TestEvalPass:
         s.update_eod(1500.0, 1500.0)
         result = s.update_eod(1500.0, 3000.0)
         assert result == "passed"
+
+    def test_03b_flat_day_does_not_count_toward_minimum_trading_days(self):
+        """Only real trading days should satisfy the eval minimum-day rule."""
+        s = MFFState(make_config())
+        s.update_eod(3000.0, 3000.0, had_trade=True)
+        result = s.update_eod(0.0, 3000.0, had_trade=False)
+        assert result == "continue"
+        assert s.trading_days == 1
 
 
 # === EVAL PHASE: Blown Conditions ===
@@ -158,16 +170,19 @@ class TestFundedPayout:
         s = MFFState(make_config())
         s.transition_to_funded()
         s.total_profit = 2000.0
+        s.cycle_net_profit = 2000.0
         s.winning_days = 5
         net = s.process_payout()
         assert net == 800.0
         assert s.total_profit == 1000.0
+        assert s.cycle_net_profit == 0.0
         assert s.winning_days == 0
 
     def test_14_payout_below_minimum_returns_zero(self):
         s = MFFState(make_config())
         s.transition_to_funded()
         s.total_profit = 400.0
+        s.cycle_net_profit = 400.0
         s.winning_days = 5
         net = s.process_payout()
         assert net == 0.0
@@ -176,6 +191,7 @@ class TestFundedPayout:
         s = MFFState(make_config())
         s.transition_to_funded()
         s.total_profit = 20000.0
+        s.cycle_net_profit = 20000.0
         s.winning_days = 5
         net = s.process_payout()
         assert net == 5000.0 * 0.80
@@ -184,18 +200,22 @@ class TestFundedPayout:
         s = MFFState(make_config())
         s.transition_to_funded()
         s.total_profit = 2000.0
+        s.cycle_net_profit = 2000.0
         s.winning_days = 5
         s.process_payout()
         assert s.mll_frozen == True
         assert s.mll == 100.0
+        assert s.static_floor_equity == 100.0
 
     def test_17_mll_stays_frozen_after_second_payout(self):
         s = MFFState(make_config())
         s.transition_to_funded()
         s.total_profit = 4000.0
+        s.cycle_net_profit = 4000.0
         s.winning_days = 10
         s.process_payout()
         s.total_profit = 3000.0
+        s.cycle_net_profit = 3000.0
         s.winning_days = 5
         s.process_payout()
         assert s.mll == 100.0
@@ -223,12 +243,42 @@ class TestPayoutEligibility:
         s = MFFState(make_config())
         s.transition_to_funded()
         s.winning_days = 5
-        s.total_profit = 600.0
+        s.cycle_net_profit = 600.0
         assert s.payout_eligible == True
 
     def test_21_not_eligible_with_4_days(self):
         s = MFFState(make_config())
         s.transition_to_funded()
         s.winning_days = 4
-        s.total_profit = 10000.0
+        s.cycle_net_profit = 10000.0
         assert s.payout_eligible == False
+
+    def test_22_not_eligible_without_new_cycle_profit_after_payout(self):
+        s = MFFState(make_config())
+        s.transition_to_funded()
+        s.total_profit = 2000.0
+        s.cycle_net_profit = 2000.0
+        s.winning_days = 5
+        s.process_payout()
+        s.winning_days = 5
+        assert s.payout_eligible == False
+
+
+class TestLifecycleCompliance:
+    def test_23_live_ready_after_five_payouts(self):
+        s = MFFState(make_config())
+        s.transition_to_funded()
+        for _ in range(5):
+            s.total_profit += 2000.0
+            s.cycle_net_profit = 2000.0
+            s.winning_days = 5
+            s.process_payout()
+        assert s.live_transition_ready == True
+        assert s.live_transition_reason == "payouts"
+
+    def test_24_inactivity_breaches_after_seven_calendar_days(self):
+        s = MFFState(make_config())
+        s.transition_to_funded()
+        s.update_eod(200.0, 200.0, had_trade=True, session_date="2024-01-02")
+        assert s.check_inactivity_before_session("2024-01-08") == "continue"
+        assert s.check_inactivity_before_session("2024-01-09") == "inactive"

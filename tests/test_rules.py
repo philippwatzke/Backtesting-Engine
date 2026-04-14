@@ -19,8 +19,12 @@ def make_eval_config():
             "payout_max_pct": 0.50,
             "payout_cap": 5000.0,
             "payout_min_gross": 250.0,
+            "payout_min_net_profit_between_payouts": 500.0,
             "profit_split_trader": 0.80,
             "eval_cost": 107.0,
+            "inactivity_rule_calendar_days": 7,
+            "live_transition_payouts_required": 5,
+            "live_sim_cap_profit": 100000.0,
             "scaling": {
                 "tiers": [
                     {"min_profit": -1e9, "max_profit": 1500.0, "max_contracts": 20},
@@ -129,23 +133,24 @@ class TestFundedPhase:
         state.transition_to_funded()
         state.equity = 2000.0
         state.total_profit = 2000.0
+        state.cycle_net_profit = 2000.0
         state.winning_days = 5
         state.process_payout()
         assert state.mll == 100.0
-        assert state.static_floor_equity == 900.0
+        assert state.static_floor_equity == 100.0
 
     def test_payout_eligibility(self):
         state = MFFState(make_eval_config())
         state.phase = "funded"
         state.winning_days = 5
-        state.total_profit = 600.0
+        state.cycle_net_profit = 600.0
         assert state.payout_eligible == True
 
     def test_payout_not_eligible_insufficient_days(self):
         state = MFFState(make_eval_config())
         state.phase = "funded"
         state.winning_days = 4
-        state.total_profit = 600.0
+        state.cycle_net_profit = 600.0
         assert state.payout_eligible == False
 
 
@@ -207,15 +212,16 @@ class TestStaticFloorAfterPayout:
         state.transition_to_funded()
         state.equity = 2000.0
         state.total_profit = 2000.0
+        state.cycle_net_profit = 2000.0
         state.winning_days = 5
         state.process_payout()
-        assert state.static_floor_equity == 900.0
+        assert state.static_floor_equity == 100.0
 
         result = state.update_eod(400.0, 1400.0)
         assert result == "continue"
-        assert state.static_floor_equity == 900.0
+        assert state.static_floor_equity == 100.0
 
-        result = state.update_eod(-550.0, 850.0)
+        result = state.update_eod(-1350.0, 50.0)
         assert result == "blown"
 
     def test_process_payout_reduces_equity_and_total_profit(self):
@@ -223,8 +229,10 @@ class TestStaticFloorAfterPayout:
         state.transition_to_funded()
         state.equity = 2000.0
         state.total_profit = 2000.0
+        state.cycle_net_profit = 2000.0
         state.winning_days = 5
         net = state.process_payout()
         assert net == 800.0
         assert state.equity == 1000.0
         assert state.total_profit == 1000.0
+        assert state.cycle_net_profit == 0.0

@@ -1,26 +1,30 @@
 [general]
 random_seed = 42
 
-# [simulator] section reserved for future use (e.g. starting_equity overrides).
-# Not consumed by current code - MFFState always starts at equity 0.0.
+[portfolio.shared]
+risk_buffer_fraction = 0.25
 
-[strategy.orb.shared]
-range_minutes = 15
-max_trades_day = 2
-buffer_ticks = 2.0
-volume_threshold = 0.0
+[strategy.mgc_h1_trend.shared]
+session_start = "08:00"
+session_end = "15:59"
+max_trades_day = 1
+donchian_lookback = 5
+trigger_start_minute = 60   # 09:00 ET on the session-relative grid (session starts at 08:00 ET)
+trigger_end_minute = 180    # 11:00 ET on the session-relative grid (session starts at 08:00 ET)
+time_stop_minute = 475
+breakeven_trigger_ticks = 0.0
 
-[strategy.orb.eval]
-stop_ticks = 40.0
-target_ticks = 60.0
-contracts = 10
+[strategy.mgc_h1_trend.eval]
+risk_per_trade_usd = 400.0
+stop_atr_multiplier = 1.5
+target_atr_multiplier = 10.0
 daily_stop = -750.0
 daily_target = 600.0
 
-[strategy.orb.funded]
-stop_ticks = 35.0
-target_ticks = 80.0
-contracts = 20
+[strategy.mgc_h1_trend.funded]
+risk_per_trade_usd = 400.0
+stop_atr_multiplier = 1.5
+target_atr_multiplier = 10.0
 daily_stop = -1000.0
 daily_target = 900.0
 

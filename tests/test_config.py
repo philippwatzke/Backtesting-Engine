@@ -21,7 +21,9 @@ class TestLoadMFFConfig:
 
     def test_loads_instrument_tick_size(self):
         cfg = load_mff_config(CONFIGS_DIR / "mff_flex_50k.toml")
-        assert cfg["instrument"]["tick_size"] == 0.25
+        assert cfg["instrument"]["name"] == "MGC"
+        assert cfg["instrument"]["tick_size"] == 0.10
+        assert cfg["instrument"]["tick_value"] == 1.00
         assert cfg["instrument"]["commission_per_side"] == 0.54
 
     def test_raises_on_missing_file(self):
@@ -221,14 +223,30 @@ class TestLoadParamsConfig:
         assert mc["n_simulations"] == 10_000
         assert mc["block_size_min"] == 5
 
-    def test_loads_strategy_orb_eval_and_funded(self):
+    def test_loads_strategy_mgc_h1_trend_eval_and_funded(self):
         cfg = load_params_config(CONFIGS_DIR / "default_params.toml")
-        shared = cfg["strategy"]["orb"]["shared"]
-        eval_cfg = cfg["strategy"]["orb"]["eval"]
-        funded_cfg = cfg["strategy"]["orb"]["funded"]
-        assert shared["range_minutes"] == 15
+        shared = cfg["strategy"]["mgc_h1_trend"]["shared"]
+        eval_cfg = cfg["strategy"]["mgc_h1_trend"]["eval"]
+        funded_cfg = cfg["strategy"]["mgc_h1_trend"]["funded"]
+        assert shared["session_start"] == "08:00"
+        assert shared["session_end"] == "15:59"
+        assert shared["max_trades_day"] == 1
+        assert shared["donchian_lookback"] == 5
+        assert shared["trigger_start_minute"] == 60
+        assert shared["trigger_end_minute"] == 180
+        assert shared["time_stop_minute"] == 475
+        assert shared["breakeven_trigger_ticks"] == 0.0
         assert eval_cfg["daily_stop"] == -750.0
-        assert funded_cfg["contracts"] == 20
+        assert eval_cfg["stop_atr_multiplier"] == 1.5
+        assert funded_cfg["target_atr_multiplier"] == 10.0
+
+    def test_mgc_h1_trend_is_active_strategy_block(self):
+        cfg = load_params_config(CONFIGS_DIR / "default_params.toml")
+        portfolio_shared = cfg["portfolio"]["shared"]
+        assert "mgc_h1_trend" in cfg["strategy"]
+        assert "mgc_macro_orb" not in cfg["strategy"]
+        assert "vwap_pullback" not in cfg["strategy"]
+        assert portfolio_shared["risk_buffer_fraction"] == 0.25
 
     def test_rejects_invalid_block_mode(self, tmp_path):
         bad_cfg = tmp_path / "bad_params.toml"
@@ -288,6 +306,8 @@ class TestLoadParamsConfig:
             "contracts = 20\n"
             "daily_stop = -1000.0\n"
             "daily_target = 900.0\n\n"
+            "[portfolio.shared]\n"
+            "risk_buffer_fraction = 0.15\n\n"
             "[slippage]\n"
             "stop_penalty = 1.5\n"
             "atr_period = 14\n"
@@ -318,6 +338,8 @@ class TestLoadParamsConfig:
             "contracts = 10\n"
             "daily_stop = -750.0\n"
             "daily_target = 600.0\n\n"
+            "[portfolio.shared]\n"
+            "risk_buffer_fraction = 0.15\n\n"
             "[slippage]\n"
             "stop_penalty = 1.5\n"
             "atr_period = 14\n"
@@ -354,6 +376,8 @@ class TestLoadParamsConfig:
             "contracts = 20\n"
             "daily_stop = -1000.0\n"
             "daily_target = 900.0\n\n"
+            "[portfolio.shared]\n"
+            "risk_buffer_fraction = 0.15\n\n"
             "[slippage]\n"
             "stop_penalty = 1.5\n"
             "atr_period = 14\n"

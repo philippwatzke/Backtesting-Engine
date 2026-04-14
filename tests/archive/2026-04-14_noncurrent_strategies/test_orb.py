@@ -67,3 +67,49 @@ class TestORBSignal:
         c[15] = 20010.0
         sig = orb_signal(15, o, h, l, c, v, mod, 0.0, 0.0, 5, 0.0, False, 0, p)
         assert sig == 0
+
+    def test_no_signal_after_morning_cutoff(self):
+        n = 390
+        o, h, l, c, v, mod, p = self._make_arrays(n)
+        c[121] = 20010.0
+        h[121] = 20010.0
+        sig = orb_signal(121, o, h, l, c, v, mod, 0.0, 0.0, 0, 0.0, False, 0, p)
+        assert sig == 0
+
+    def test_long_requires_close_above_daily_open(self):
+        n = 390
+        o, h, l, c, v, mod, p = self._make_arrays(n, 20000.0)
+        o[0] = 20006.0
+        c[15] = 20005.0
+        h[15] = 20006.0
+        sig = orb_signal(15, o, h, l, c, v, mod, 0.0, 0.0, 0, 0.0, False, 0, p)
+        assert sig == 0
+
+    def test_short_requires_close_below_daily_open(self):
+        n = 390
+        o, h, l, c, v, mod, p = self._make_arrays(n, 20000.0)
+        o[0] = 19994.0
+        c[15] = 19995.0
+        l[15] = 19994.0
+        sig = orb_signal(15, o, h, l, c, v, mod, 0.0, 0.0, 0, 0.0, False, 0, p)
+        assert sig == 0
+
+    def test_volume_threshold_requires_breakout_bar_confirmation(self):
+        n = 390
+        o, h, l, c, v, mod, p = self._make_arrays(n, 20000.0)
+        p[8] = 1.5
+        c[15] = 20005.0
+        h[15] = 20006.0
+        v[15] = 1499
+        sig = orb_signal(15, o, h, l, c, v, mod, 0.0, 0.0, 0, 0.0, False, 0, p)
+        assert sig == 0
+
+    def test_volume_threshold_allows_confirmed_breakout(self):
+        n = 390
+        o, h, l, c, v, mod, p = self._make_arrays(n, 20000.0)
+        p[8] = 1.5
+        c[15] = 20005.0
+        h[15] = 20006.0
+        v[15] = 1500
+        sig = orb_signal(15, o, h, l, c, v, mod, 0.0, 0.0, 0, 0.0, False, 0, p)
+        assert sig == 1

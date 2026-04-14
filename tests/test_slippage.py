@@ -8,38 +8,44 @@ from propfirm.market.slippage import compute_slippage, build_slippage_lookup, es
 class TestComputeSlippage:
     def test_returns_float(self):
         lookup = np.ones(390, dtype=np.float64)
-        result = compute_slippage(0, 5.0, 5.0, lookup, False, 1.5)
+        result = compute_slippage(0, 5.0, 5.0, lookup, False, 1.5, 0.25)
         assert isinstance(result, float)
 
     def test_floor_at_one_tick(self):
         lookup = np.full(390, 0.01, dtype=np.float64)  # Very low baseline
-        result = compute_slippage(100, 0.1, 10.0, lookup, False, 1.0)
+        result = compute_slippage(100, 0.1, 10.0, lookup, False, 1.0, 0.25)
         assert result == 0.25  # Floor = 1 tick = 0.25 points
 
     def test_scales_with_atr(self):
         lookup = np.ones(390, dtype=np.float64)
-        low_vol = compute_slippage(100, 2.0, 10.0, lookup, False, 1.0)
-        high_vol = compute_slippage(100, 20.0, 10.0, lookup, False, 1.0)
+        low_vol = compute_slippage(100, 2.0, 10.0, lookup, False, 1.0, 0.25)
+        high_vol = compute_slippage(100, 20.0, 10.0, lookup, False, 1.0, 0.25)
         assert high_vol > low_vol
 
     def test_stop_penalty_increases_slippage(self):
         lookup = np.ones(390, dtype=np.float64)
-        no_penalty = compute_slippage(100, 5.0, 5.0, lookup, False, 1.5)
-        with_penalty = compute_slippage(100, 5.0, 5.0, lookup, True, 1.5)
+        no_penalty = compute_slippage(100, 5.0, 5.0, lookup, False, 1.5, 0.25)
+        with_penalty = compute_slippage(100, 5.0, 5.0, lookup, True, 1.5, 0.25)
         assert with_penalty == no_penalty * 1.5
 
     def test_zero_trailing_atr_returns_floor(self):
         lookup = np.ones(390, dtype=np.float64)
-        result = compute_slippage(100, 5.0, 0.0, lookup, False, 1.0)
+        result = compute_slippage(100, 5.0, 0.0, lookup, False, 1.0, 0.25)
         assert result >= 0.25
 
     def test_open_minute_higher_than_midday(self):
         lookup = np.zeros(390, dtype=np.float64)
         lookup[0] = 3.0
         lookup[120] = 0.75
-        open_slip = compute_slippage(0, 5.0, 5.0, lookup, False, 1.0)
-        mid_slip = compute_slippage(120, 5.0, 5.0, lookup, False, 1.0)
+        open_slip = compute_slippage(0, 5.0, 5.0, lookup, False, 1.0, 0.25)
+        mid_slip = compute_slippage(120, 5.0, 5.0, lookup, False, 1.0, 0.25)
         assert open_slip > mid_slip
+
+    def test_extra_slippage_points_are_added_after_model(self):
+        lookup = np.ones(390, dtype=np.float64)
+        base = compute_slippage(100, 5.0, 5.0, lookup, False, 1.0, 0.25)
+        stressed = compute_slippage(100, 5.0, 5.0, lookup, False, 1.0, 0.25, 0.50)
+        assert stressed == base + 0.50
 
 
 class TestBuildSlippageLookup:
@@ -55,6 +61,12 @@ class TestBuildSlippageLookup:
     def test_open_higher_than_midday(self):
         lookup = build_slippage_lookup(None)
         assert lookup[0] > lookup[120]
+
+    def test_scales_default_profile_for_non_rth_session(self):
+        lookup = build_slippage_lookup(None, session_minutes=480)
+        assert lookup.shape == (480,)
+        assert np.all(lookup > 0)
+        assert lookup[0] > lookup[200]
 
     def test_require_file_raises_when_profile_missing(self, tmp_path):
         missing = tmp_path / "missing_profile.parquet"

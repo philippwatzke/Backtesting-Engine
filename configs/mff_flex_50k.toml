@@ -7,14 +7,18 @@ max_contracts = 50
 
 [funded]
 max_loss_limit = 2000.0
-mll_frozen_value = 100.0
+mll_frozen_value = 100.0          # Static absolute EOD floor after first payout
 winning_day_threshold = 150.0
 payout_winning_days_required = 5
 payout_max_pct = 0.50
 payout_cap = 5000.0
 payout_min_gross = 250.0
+payout_min_net_profit_between_payouts = 500.0
 profit_split_trader = 0.80
 eval_cost = 107.0
+inactivity_rule_calendar_days = 7
+live_transition_payouts_required = 5
+live_sim_cap_profit = 100000.0
 
 [funded.scaling]
 tiers = [
@@ -24,7 +28,7 @@ tiers = [
 ]
 
 [instrument]
-name = "MNQ"
-tick_size = 0.25
-tick_value = 0.50
+name = "MGC"
+tick_size = 0.10
+tick_value = 1.00
 commission_per_side = 0.54

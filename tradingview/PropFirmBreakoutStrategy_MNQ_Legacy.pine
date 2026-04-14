@@ -1,0 +1,260 @@
+//@version=6
+strategy(
+    "PropFirm Breakout Strategy - MNQ Legacy",
+    overlay = true,
+    pyramiding = 0,
+    calc_on_every_tick = false,
+    calc_on_order_fills = false,
+    process_orders_on_close = true,
+    commission_type = strategy.commission.cash_per_contract,
+    commission_value = 0.0,
+    margin_long = 5,
+    margin_short = 5,
+    initial_capital = 50000,
+    default_qty_type = strategy.fixed,
+    default_qty_value = 1
+)
+
+// -----------------------------------------------------------------------------
+// Legacy MNQ execution variant
+// -----------------------------------------------------------------------------
+// This script mirrors the restored legacy MNQ Python configuration:
+// - Signal timeframe: 30m
+// - Session: 08:00 -> 15:59 ET
+// - Donchian lookback: 10
+// - SMA length: 50
+// - ATR length: 14
+// - Stop ATR multiplier: 1.5
+// - Target ATR multiplier: 10.0
+// - Trigger window on signal bars: 10:30 -> 11:00 ET
+// - Daily regime filter: prior session close vs prior SMA(50)
+//
+// Python remains the research source of truth. This script is the TradingView
+// execution variant for the legacy MNQ strategy on a 1-minute chart.
+// -----------------------------------------------------------------------------
+
+webhookKey = input.string("", "CrossTrade Webhook Key")
+symbolOverride = input.string("", "CrossTrade Symbol Override")
+sessionTz = input.string("America/New_York", "Session Timezone")
+tradeQty = input.int(2, "Contracts", minval = 1)
+showSignalLevels = input.bool(true, "Plot Signal Levels")
+showDiagnostics = input.bool(true, "Show Diagnostics")
+
+signalTf = "30"
+sessionStartMinutes = 8 * 60
+sessionEndMinutes = 15 * 60 + 59
+signalTfMinutes = 30
+lastSignalBarStartMinutes = sessionEndMinutes - signalTfMinutes + 1
+triggerStartMinutes = 10 * 60 + 30
+triggerEndMinutes = 11 * 60
+donchianLookback = 10
+smaLength = 50
+atrLength = 14
+stopAtrMult = 1.5
+targetAtrMult = 10.0
+
+f_minutes_to_hhmm(int totalMinutes) =>
+    hoursPart = int(math.floor(totalMinutes / 60))
+    minutesPart = totalMinutes % 60
+    str.tostring(hoursPart, "#") + ":" + str.tostring(minutesPart, "00")
+
+f_bar_minutes_tz(string tz) =>
+    hour(time, tz) * 60 + minute(time, tz)
+
+f_is_weekday_tz(string tz) =>
+    dow = dayofweek(time, tz)
+    dow >= dayofweek.monday and dow <= dayofweek.friday
+
+f_is_session_bar(int startMinutes, int endMinutes, string tz) =>
+    barMinutes = f_bar_minutes_tz(tz)
+    f_is_weekday_tz(tz) and barMinutes >= startMinutes and barMinutes <= endMinutes
+
+f_session_close_event(int closeEventMinutes, string tz) =>
+    barMinutes = f_bar_minutes_tz(tz)
+    f_is_weekday_tz(tz) and barMinutes == closeEventMinutes ? close : na
+
+f_signal_time_expr(int startMinutes, int endMinutes, string tz) =>
+    f_is_session_bar(startMinutes, endMinutes, tz) ? time : na
+
+f_signal_close_expr(int startMinutes, int endMinutes, string tz) =>
+    f_is_session_bar(startMinutes, endMinutes, tz) ? close : na
+
+f_signal_sma_expr(int startMinutes, int endMinutes, int smaLen, string tz) =>
+    sessionClose = f_is_session_bar(startMinutes, endMinutes, tz) ? close : na
+    ta.sma(sessionClose, smaLen)
+
+f_signal_atr_expr(int startMinutes, int endMinutes, int atrLen, string tz) =>
+    sessionTr = f_is_session_bar(startMinutes, endMinutes, tz) ? ta.tr(true) : na
+    ta.rma(sessionTr, atrLen)
+
+f_donchian_high_expr(int startMinutes, int endMinutes, int lookback, string tz) =>
+    sessionHigh = f_is_session_bar(startMinutes, endMinutes, tz) ? high : na
+    ta.highest(sessionHigh[1], lookback)
+
+f_donchian_low_expr(int startMinutes, int endMinutes, int lookback, string tz) =>
+    sessionLow = f_is_session_bar(startMinutes, endMinutes, tz) ? low : na
+    ta.lowest(sessionLow[1], lookback)
+
+f_daily_regime_bias_expr(int closeEventMinutes, int smaLen, string tz) =>
+    sessionCloseEvent = f_session_close_event(closeEventMinutes, tz)
+    sessionCloseSma = ta.sma(sessionCloseEvent, smaLen)
+    prevSessionClose = ta.valuewhen(not na(sessionCloseEvent), sessionCloseEvent, 1)
+    prevSessionSma = ta.valuewhen(not na(sessionCloseEvent), sessionCloseSma, 1)
+    float regimeBias = 0.0
+    if not na(prevSessionSma)
+        regimeBias := prevSessionClose > prevSessionSma ? 1.0 : prevSessionClose < prevSessionSma ? -1.0 : 0.0
+    regimeBias
+
+f_session_close_count_expr(int closeEventMinutes, string tz) =>
+    ta.cum(not na(f_session_close_event(closeEventMinutes, tz)) ? 1 : 0)
+
+f_entry_payload(string key, string action, string symbol, int quantity) =>
+    "{\"key\":\"" + key + "\",\"action\":\"" + action + "\",\"symbol\":\"" + symbol + "\",\"quantity\":" + str.tostring(quantity) + "}"
+
+f_close_payload(string key, string symbol) =>
+    "{\"key\":\"" + key + "\",\"action\":\"close\",\"symbol\":\"" + symbol + "\"}"
+
+tradeSymbol = str.length(symbolOverride) > 0 ? symbolOverride : "MNQ"
+isOneMinuteChart = timeframe.isminutes and timeframe.multiplier == 1
+barMinutesEt = f_bar_minutes_tz(sessionTz)
+currentDateKeyEt = year(time, sessionTz) * 10000 + month(time, sessionTz) * 100 + dayofmonth(time, sessionTz)
+insideResearchSession = f_is_session_bar(sessionStartMinutes, sessionEndMinutes, sessionTz)
+isHardCloseBar = insideResearchSession and barMinutesEt == sessionEndMinutes
+newSignalBlock = insideResearchSession and ta.change(time(signalTf)) != 0
+
+calcBarsCount = 10000
+signalTime = request.security(syminfo.tickerid, signalTf, f_signal_time_expr(sessionStartMinutes, sessionEndMinutes, sessionTz), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off, calc_bars_count = calcBarsCount)
+signalClose = request.security(syminfo.tickerid, signalTf, f_signal_close_expr(sessionStartMinutes, sessionEndMinutes, sessionTz), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off, calc_bars_count = calcBarsCount)
+signalSma = request.security(syminfo.tickerid, signalTf, f_signal_sma_expr(sessionStartMinutes, sessionEndMinutes, smaLength, sessionTz), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off, calc_bars_count = calcBarsCount)
+signalAtr = request.security(syminfo.tickerid, signalTf, f_signal_atr_expr(sessionStartMinutes, sessionEndMinutes, atrLength, sessionTz), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off, calc_bars_count = calcBarsCount)
+priorDonchianHigh = request.security(syminfo.tickerid, signalTf, f_donchian_high_expr(sessionStartMinutes, sessionEndMinutes, donchianLookback, sessionTz), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off, calc_bars_count = calcBarsCount)
+priorDonchianLow = request.security(syminfo.tickerid, signalTf, f_donchian_low_expr(sessionStartMinutes, sessionEndMinutes, donchianLookback, sessionTz), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off, calc_bars_count = calcBarsCount)
+dailyRegimeBias = request.security(syminfo.tickerid, signalTf, f_daily_regime_bias_expr(lastSignalBarStartMinutes, smaLength, sessionTz), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off, calc_bars_count = calcBarsCount)
+sessionCloseCountHtf = request.security(syminfo.tickerid, signalTf, f_session_close_count_expr(lastSignalBarStartMinutes, sessionTz), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off, calc_bars_count = calcBarsCount)
+
+signalStartMinutesEt = not na(signalTime) ? hour(signalTime, sessionTz) * 60 + minute(signalTime, sessionTz) : na
+signalInsideWindow = not na(signalStartMinutesEt) and signalStartMinutesEt >= triggerStartMinutes and signalStartMinutesEt <= triggerEndMinutes
+dataReady = not na(signalTime) and not na(signalClose) and not na(signalSma) and not na(signalAtr) and not na(priorDonchianHigh) and not na(priorDonchianLow)
+regimeAllowsLong = dailyRegimeBias > 0.0
+regimeAllowsShort = dailyRegimeBias < 0.0
+rawLongSignal = newSignalBlock and dataReady and signalInsideWindow and signalClose > priorDonchianHigh and signalClose > signalSma and regimeAllowsLong
+rawShortSignal = newSignalBlock and dataReady and signalInsideWindow and signalClose < priorDonchianLow and signalClose < signalSma and regimeAllowsShort
+
+entryJsonLong = f_entry_payload(webhookKey, "buy", tradeSymbol, tradeQty)
+entryJsonShort = f_entry_payload(webhookKey, "sell", tradeSymbol, tradeQty)
+closeJson = f_close_payload(webhookKey, tradeSymbol)
+
+var int trackedDayKey = na
+var int tradesToday = 0
+var int firstSessionBarMinuteEt = na
+var float activeStopPrice = na
+var float activeTargetPrice = na
+var label chartWarning = na
+var table diagnosticsTable = table.new(position.top_right, 2, 6, border_width = 1)
+
+diagHeaderBg = color.new(color.silver, 10)
+diagCellBg = color.new(color.black, 15)
+diagStatusBg = color.new(color.black, 25)
+
+if isOneMinuteChart
+    if not na(chartWarning)
+        label.delete(chartWarning)
+        chartWarning := na
+else if barstate.islast and na(chartWarning)
+    chartWarning := label.new(
+         bar_index,
+         high,
+         "Use this strategy on a 1-minute chart.",
+         style = label.style_label_down,
+         textcolor = color.white,
+         color = color.new(color.orange, 0),
+         size = size.small
+     )
+
+if insideResearchSession and (na(trackedDayKey) or currentDateKeyEt != trackedDayKey)
+    trackedDayKey := currentDateKeyEt
+    tradesToday := 0
+    firstSessionBarMinuteEt := barMinutesEt
+
+canEnter = isOneMinuteChart and strategy.position_size == 0 and tradesToday < 1 and not isHardCloseBar
+if canEnter and (rawLongSignal or rawShortSignal)
+    entryBasisPrice = signalClose
+    stopDistance = signalAtr * stopAtrMult
+    targetDistance = signalAtr * targetAtrMult
+
+    if rawLongSignal
+        activeStopPrice := entryBasisPrice - stopDistance
+        activeTargetPrice := entryBasisPrice + targetDistance
+        strategy.entry("Long", strategy.long, qty = tradeQty, comment = "LongBreakout", alert_message = entryJsonLong)
+    else
+        activeStopPrice := entryBasisPrice + stopDistance
+        activeTargetPrice := entryBasisPrice - targetDistance
+        strategy.entry("Short", strategy.short, qty = tradeQty, comment = "ShortBreakout", alert_message = entryJsonShort)
+
+    tradesToday += 1
+
+if strategy.position_size > 0 and not na(activeStopPrice) and not na(activeTargetPrice)
+    strategy.exit(
+         "Long Exit",
+         from_entry = "Long",
+         stop = activeStopPrice,
+         limit = activeTargetPrice,
+         comment_loss = "StopLossLong",
+         comment_profit = "ProfitTargetLong",
+         alert_loss = closeJson,
+         alert_profit = closeJson
+     )
+
+if strategy.position_size < 0 and not na(activeStopPrice) and not na(activeTargetPrice)
+    strategy.exit(
+         "Short Exit",
+         from_entry = "Short",
+         stop = activeStopPrice,
+         limit = activeTargetPrice,
+         comment_loss = "StopLossShort",
+         comment_profit = "ProfitTargetShort",
+         alert_loss = closeJson,
+         alert_profit = closeJson
+     )
+
+if isHardCloseBar and strategy.position_size != 0
+    strategy.close_all(comment = "HardClose", alert_message = closeJson)
+
+if strategy.position_size == 0 and strategy.position_size[1] != 0
+    activeStopPrice := na
+    activeTargetPrice := na
+
+if barstate.islast and showDiagnostics
+    sessionCloseCount = int(nz(sessionCloseCountHtf, 0))
+    bool sessionStartsLate = not na(firstSessionBarMinuteEt) and firstSessionBarMinuteEt > sessionStartMinutes
+    string readinessText = "Ready"
+    color readinessColor = color.new(color.green, 70)
+    string regimeText = dailyRegimeBias > 0.0 ? "LONG" : dailyRegimeBias < 0.0 ? "SHORT" : "NEUTRAL"
+    if not isOneMinuteChart
+        readinessText := "Blocked: use 1m chart"
+        readinessColor := color.new(color.red, 70)
+    else if sessionStartsLate
+        readinessText := "Blocked: chart session starts at " + f_minutes_to_hhmm(firstSessionBarMinuteEt) + " ET"
+        readinessColor := color.new(color.red, 70)
+    else if sessionCloseCount < smaLength
+        readinessText := "Blocked: warmup " + str.tostring(sessionCloseCount) + "/" + str.tostring(smaLength)
+        readinessColor := color.new(color.red, 70)
+
+    table.cell(diagnosticsTable, 0, 0, "Check", text_color = color.white, bgcolor = diagHeaderBg)
+    table.cell(diagnosticsTable, 1, 0, "Status", text_color = color.white, bgcolor = diagHeaderBg)
+    table.cell(diagnosticsTable, 0, 1, "Chart", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(diagnosticsTable, 1, 1, isOneMinuteChart ? "OK (1m)" : "FAIL", text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(diagnosticsTable, 0, 2, "Session Start", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(diagnosticsTable, 1, 2, na(firstSessionBarMinuteEt) ? "n/a" : f_minutes_to_hhmm(firstSessionBarMinuteEt) + " ET", text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(diagnosticsTable, 0, 3, "Warmup", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(diagnosticsTable, 1, 3, str.tostring(sessionCloseCount) + " / " + str.tostring(smaLength), text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(diagnosticsTable, 0, 4, "Regime", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(diagnosticsTable, 1, 4, regimeText, text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(diagnosticsTable, 0, 5, "Readiness", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(diagnosticsTable, 1, 5, readinessText, bgcolor = readinessColor)
+
+plot(showSignalLevels ? signalSma : na, "Signal SMA50", color = color.orange, linewidth = 2, style = plot.style_stepline)
+plot(showSignalLevels ? priorDonchianHigh : na, "Prior Donchian High", color = color.lime, linewidth = 2, style = plot.style_stepline)
+plot(showSignalLevels ? priorDonchianLow : na, "Prior Donchian Low", color = color.red, linewidth = 2, style = plot.style_stepline)
+plot(strategy.position_size != 0 ? activeStopPrice : na, "Active Stop", color = color.new(color.red, 0), linewidth = 1, style = plot.style_linebr)
+plot(strategy.position_size != 0 ? activeTargetPrice : na, "Active Target", color = color.new(color.green, 0), linewidth = 1, style = plot.style_linebr)

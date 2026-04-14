@@ -136,8 +136,10 @@ class TestBacktestParamSet:
             "volume": np.full(n_bars, 1000, dtype=np.uint64),
             "timestamps": np.arange(n_bars, dtype=np.int64) + 1_640_000_000_000_000_000,
             "minute_of_day": np.tile(np.arange(bars_per_day, dtype=np.int16), n_days),
+            "day_of_week": np.repeat(np.arange(n_days, dtype=np.int8) % 5, bars_per_day),
             "bar_atr": np.full(n_bars, 10.0, dtype=np.float64),
             "trailing_median_atr": np.full(n_bars, 10.0, dtype=np.float64),
+            "daily_atr_ratio": np.ones(n_bars, dtype=np.float64),
             "day_boundaries": [(i * bars_per_day, (i + 1) * bars_per_day) for i in range(n_days)],
             "session_dates": [f"2022-01-{3 + i:02d}" for i in range(n_days)],
         }
@@ -193,8 +195,10 @@ class TestRunWalkForward:
             "volume": np.full(n_bars, 1000, dtype=np.uint64),
             "timestamps": np.arange(n_bars, dtype=np.int64) + 1_640_000_000_000_000_000,
             "minute_of_day": np.tile(np.arange(bars_per_day, dtype=np.int16), n_days),
+            "day_of_week": np.repeat(np.arange(n_days, dtype=np.int8) % 5, bars_per_day),
             "bar_atr": np.full(n_bars, 10.0, dtype=np.float64),
             "trailing_median_atr": np.full(n_bars, 10.0, dtype=np.float64),
+            "daily_atr_ratio": np.ones(n_bars, dtype=np.float64),
             "day_boundaries": [(i * bars_per_day, (i + 1) * bars_per_day) for i in range(n_days)],
             "session_dates": [f"2022-01-{3 + i:02d}" for i in range(n_days)],
         }

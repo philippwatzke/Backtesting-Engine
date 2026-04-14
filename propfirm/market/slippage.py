@@ -1,7 +1,7 @@
 import numpy as np
 from numba import njit
 from pathlib import Path
-from propfirm.core.types import MNQ_TICK_SIZE, SLIPPAGE_FLOOR_POINTS
+from propfirm.core.types import SLIPPAGE_FLOOR_POINTS
 
 
 @njit(cache=True)
@@ -12,6 +12,8 @@ def compute_slippage(
     slippage_lookup: np.ndarray,
     is_stop_order: bool,
     stop_penalty: float,
+    tick_size: float,
+    extra_slippage_points: float = 0.0,
 ) -> float:
     """Compute hybrid slippage for a single bar.
 
@@ -23,9 +25,11 @@ def compute_slippage(
     else:
         atr_mult = 1.0
     penalty = stop_penalty if is_stop_order else 1.0
-    raw = baseline * atr_mult * penalty * MNQ_TICK_SIZE
-    if raw < SLIPPAGE_FLOOR_POINTS:
-        raw = SLIPPAGE_FLOOR_POINTS
+    raw = baseline * atr_mult * penalty * tick_size
+    floor_points = tick_size if tick_size > 0.0 else SLIPPAGE_FLOOR_POINTS
+    if raw < floor_points:
+        raw = floor_points
+    raw += extra_slippage_points
     return raw
 
 
@@ -38,6 +42,20 @@ _DEFAULT_BUCKETS = [
     (330, 375, 1.25),
     (375, 390, 2.0),
 ]
+
+
+def _build_scaled_default_lookup(session_minutes: int, multiplier: float = 1.25) -> np.ndarray:
+    """Scale the default RTH slippage profile to arbitrary session lengths."""
+    lookup = np.ones(session_minutes, dtype=np.float64)
+    if session_minutes <= 0:
+        return lookup
+    for start, end, baseline in _DEFAULT_BUCKETS:
+        scaled_start = int(np.floor(start / 390.0 * session_minutes))
+        scaled_end = int(np.ceil(end / 390.0 * session_minutes))
+        if scaled_end <= scaled_start:
+            scaled_end = min(session_minutes, scaled_start + 1)
+        lookup[scaled_start:scaled_end] = baseline * multiplier
+    return lookup
 
 
 def estimate_baseline_ticks(
@@ -74,9 +92,13 @@ def estimate_baseline_ticks(
     return baseline
 
 
-def build_slippage_lookup(profile_path: Path | None, require_file: bool = False) -> np.ndarray:
-    """Build a 390-element slippage lookup array (one per RTH minute)."""
-    lookup = np.ones(390, dtype=np.float64)
+def build_slippage_lookup(
+    profile_path: Path | None,
+    require_file: bool = False,
+    session_minutes: int = 390,
+) -> np.ndarray:
+    """Build a per-minute slippage lookup array for the active session."""
+    lookup = np.ones(session_minutes, dtype=np.float64)
     if profile_path is not None:
         profile_path = Path(profile_path)
         if profile_path.exists():
@@ -92,6 +114,8 @@ def build_slippage_lookup(profile_path: Path | None, require_file: bool = False)
                 f"Slippage profile not found: {profile_path}. "
                 "Run scripts/calibrate_slippage.py first."
             )
+    if session_minutes != 390:
+        return _build_scaled_default_lookup(session_minutes)
     for start, end, baseline in _DEFAULT_BUCKETS:
         lookup[start:end] = baseline
     return lookup

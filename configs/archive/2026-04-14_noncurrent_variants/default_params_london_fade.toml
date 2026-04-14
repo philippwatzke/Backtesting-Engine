@@ -1,0 +1,66 @@
+# London Fade — MNQ / 15-minute configuration
+# -----------------------------------------------
+# Instrument: Micro Nasdaq (MNQ)
+#   tick_size  = 0.25
+#   tick_value = 0.50
+#   commission = 0.54 per side
+# Timeframe: 15-minute bars
+# Session : 08:00–15:59 ET  (pre-market + RTH)
+
+[general]
+random_seed = 42
+
+[instrument]
+tick_size  = 0.25
+tick_value = 0.50
+commission_per_side = 0.54   # USD per contract per side
+
+[session]
+session_start     = "08:00"
+session_end       = "15:59"
+timeframe_minutes = 15
+
+[strategy.london_fade]
+# Time anchors (HH:MM ET) — offsets from session open 08:00
+eval_start_time = "08:00"   # minute_of_day offset = 0
+trigger_time    = "11:30"   # minute_of_day offset = 210
+
+# Trend-strength filter: |close@trigger - open@eval| > min_trend_atr * ATR
+min_trend_atr = 2.0
+
+# Stop / target sizing
+stop_atr  = 1.0   # stop distance = stop_atr * ATR(trigger bar)
+rr_ratio  = 1.5   # target distance = rr_ratio * stop distance
+
+# ATR period for bar-level ATR computation
+atr_period = 14
+
+[execution]
+contracts        = 1
+max_trades       = 1          # one signal per day (at trigger time)
+# time_stop_minute = minute offset from session open (08:00)
+# 360 = 14:00 ET  →  no new entries at or after 14:00
+# Also forces hard-close of any open position at the time_stop bar
+time_stop_minute = 360
+daily_stop       = -500.0     # USD — circuit-breaker
+daily_target     = 800.0      # USD — profit lock-in
+
+[slippage]
+stop_penalty         = 1.5
+extra_slippage_ticks = 0.0
+atr_period           = 14
+trailing_atr_days    = 5
+
+[backtest]
+starting_equity = 50_000.0
+
+[monte_carlo]
+n_simulations  = 10_000
+block_mode     = "daily"
+block_size_min = 5
+block_size_max = 10
+
+[stress_test]
+slippage_multiplier = 3.0
+drawdown_buffer     = 0.8
+worst_day_injection = true

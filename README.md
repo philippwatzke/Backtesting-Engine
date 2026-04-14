@@ -2,6 +2,9 @@
 
 Backtesting- und Research-Engine fuer intraday Futures-Strategien unter MFF-aehnlichen Prop-Firm-Regeln.
 
+Aktueller Navigationspunkt:
+- Siehe [STRATEGY_STATUS.md](/c:/Users/phili/Prop-Firm%20Backtesting%20Engine/STRATEGY_STATUS.md) fuer die aktuelle Referenzstrategie, aktive Runner und archivierte Varianten.
+
 Der Schwerpunkt liegt auf:
 - lifecycle-aware Backtests mit Eval- und Funded-Phase
 - strukturierten Trade- und Daily-Logs
@@ -86,18 +89,14 @@ python scripts/run_monte_carlo.py --trades output/backtests/latest_daily_log.npy
 Erzeugt:
 - `output/monte_carlo/mc_results.json`
 
-### 4. Walk-Forward
+### 4. Time Sweep
 
 ```bash
-python scripts/run_walk_forward.py --data data/processed/MNQ_1m_train.parquet --output output/walk_forward
+python scripts/sweep_h1_times.py --data data/processed/MGC_1m_full_train.parquet
 ```
 
 Erzeugt:
-- `output/walk_forward/walk_forward_results.json`
-
-Wenn viele oder alle Fenster `not_scored` sind:
-- die Strategie erzeugt in den jeweiligen Fenstern keine auswertbaren Lifecycle-Pools
-- das ist meist ein Strategiethema, nicht automatisch ein Engine-Fehler
+- eine tabellarische H1-Startzeit-Sensitivitaet fuer den aktiven MGC-Trendpfad
 
 ## Wichtige Artefakte
 
@@ -140,9 +139,9 @@ Empfehlung fuer Research:
 
 ## Typische Stolperfallen
 
-### Fehlendes Slippage-Profil
+### Fehlendes Slippage-Profil bei Legacy-Research
 
-`run_backtest.py` und `run_walk_forward.py` verlangen fuer historische Laeufe ein vorhandenes Profil unter:
+Einige aeltere Research-Skripte verlangen ein vorhandenes Profil unter:
 - `data/slippage/slippage_profile.parquet`
 
 Wenn es fehlt:

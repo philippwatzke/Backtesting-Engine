@@ -1,0 +1,45 @@
+[general]
+random_seed = 42
+
+[portfolio.shared]
+risk_buffer_fraction = 0.25
+
+[strategy.mgc_h1_trend.shared]
+session_start = "18:00"
+session_end = "02:00"
+max_trades_day = 1
+donchian_lookback = 10
+trigger_start_minute = 0
+trigger_end_minute = 60
+time_stop_minute = 480
+breakeven_trigger_ticks = 0.0
+
+[strategy.mgc_h1_trend.eval]
+risk_per_trade_usd = 400.0
+stop_atr_multiplier = 1.5
+target_atr_multiplier = 10.0
+daily_stop = -750.0
+daily_target = 600.0
+
+[strategy.mgc_h1_trend.funded]
+risk_per_trade_usd = 400.0
+stop_atr_multiplier = 1.5
+target_atr_multiplier = 10.0
+daily_stop = -1000.0
+daily_target = 900.0
+
+[slippage]
+stop_penalty = 1.5
+atr_period = 14
+trailing_atr_days = 5
+
+[monte_carlo]
+n_simulations = 10_000
+block_mode = "daily"
+block_size_min = 5
+block_size_max = 10
+
+[stress_test]
+slippage_multiplier = 3.0
+drawdown_buffer = 0.8
+worst_day_injection = true

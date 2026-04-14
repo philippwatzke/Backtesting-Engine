@@ -30,6 +30,8 @@ def orb_signal(
 
     if mod < range_minutes:
         return 0
+    if mod > 120:
+        return 0
 
     if halted:
         return 0
@@ -41,6 +43,7 @@ def orb_signal(
         return 0
 
     day_start = bar_idx - mod
+    daily_open = opens[day_start]
     range_high = -1e18
     range_low = 1e18
     for i in range(day_start, day_start + range_minutes):
@@ -59,15 +62,18 @@ def orb_signal(
             if i >= 0 and i < len(volumes):
                 avg_vol += volumes[i]
                 count += 1
-        if count > 0:
-            avg_vol /= count
-        if avg_vol > 0 and volumes[bar_idx] / avg_vol < volume_threshold:
+        if count <= 0:
+            return 0
+        avg_vol /= count
+        if avg_vol <= 0.0:
+            return 0
+        if volumes[bar_idx] / avg_vol < volume_threshold:
             return 0
 
     bar_close = closes[bar_idx]
-    if bar_close > range_high + buffer_points:
+    if bar_close > range_high + buffer_points and bar_close > daily_open:
         return 1
-    if bar_close < range_low - buffer_points:
+    if bar_close < range_low - buffer_points and bar_close < daily_open:
         return -1
 
     return 0

@@ -1,0 +1,177 @@
+//@version=6
+strategy(
+    "PropFirm Breakout Strategy - MNQ (30m signals from 1m)",
+    overlay = true,
+    pyramiding = 0,
+    calc_on_every_tick = false,
+    calc_on_order_fills = false,
+    process_orders_on_close = true,
+    commission_type = strategy.commission.cash_per_contract,
+    commission_value = 0.0,
+    initial_capital = 50000,
+    default_qty_type = strategy.fixed,
+    default_qty_value = 1
+)
+
+// Run this strategy on a 1-minute MNQ chart with adjusted data enabled.
+// Signals are derived from 30-minute bars so the strategy can still force
+// a hard close on the 15:59 ET 1-minute bar.
+
+signalTf = input.timeframe("30", "Signal Timeframe")
+sessionTz = input.string("America/New_York", "Session Timezone")
+donchianLookback = input.int(5, "Donchian Lookback", minval = 1)
+smaLength = input.int(50, "SMA Length", minval = 1)
+atrLength = input.int(14, "ATR Length", minval = 1)
+stopAtrMult = input.float(1.5, "Stop ATR Multiplier", minval = 0.1, step = 0.1)
+targetAtrMult = input.float(10.0, "Target ATR Multiplier", minval = 0.1, step = 0.1)
+maxTradesPerDay = input.int(1, "Max Trades Per Day", minval = 1)
+maxIntradayLossUsd = input.float(0.0, "Max Intraday Loss USD", minval = 0.0, step = 50.0)
+webhook_passphrase = input.string("", "Webhook Passphrase")
+ticker_override = input.string("MNQ", "Ticker Override")
+showDebugLabels = input.bool(true, "Show Debug Labels")
+showPlots = input.bool(true, "Plot 30m Levels")
+
+isOneMinuteChart = timeframe.isminutes and timeframe.multiplier == 1
+
+f_minutes_in_tz(int ts, string tz) =>
+    hour(ts, tz) * 60 + minute(ts, tz)
+
+f_build_payload(string action, float quantity, string reason) =>
+    "{\"passphrase\":\"" + webhook_passphrase +
+      "\",\"action\":\"" + action +
+      "\",\"symbol\":\"" + ticker_override +
+      "\",\"quantity\":" + str.tostring(quantity) +
+      ",\"reason\":\"" + reason + "\"}"
+
+// At the first minute of a new 30m block, these values represent the
+// just-closed 30m signal bar and its prior context.
+signalTime30 = request.security(syminfo.tickerid, signalTf, time, gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+signalClose30 = request.security(syminfo.tickerid, signalTf, close, gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+signalSma30 = request.security(syminfo.tickerid, signalTf, ta.sma(close, smaLength), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+signalAtr30 = request.security(syminfo.tickerid, signalTf, ta.atr(atrLength), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+priorDonchianHigh30 = request.security(syminfo.tickerid, signalTf, ta.highest(high[1], donchianLookback), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+priorDonchianLow30 = request.security(syminfo.tickerid, signalTf, ta.lowest(low[1], donchianLookback), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+
+plot(showPlots ? signalSma30 : na, "30m SMA 50", color = color.orange, linewidth = 2, style = plot.style_stepline)
+plot(showPlots ? priorDonchianHigh30 : na, "30m Prior Donchian High", color = color.lime, linewidth = 2, style = plot.style_stepline)
+plot(showPlots ? priorDonchianLow30 : na, "30m Prior Donchian Low", color = color.red, linewidth = 2, style = plot.style_stepline)
+
+newSignalBlock = ta.change(time(signalTf)) != 0
+isHardCloseBar = hour(time, sessionTz) == 15 and minute(time, sessionTz) == 59
+
+entryStartMinutesEt = 9 * 60
+entryEndMinutesEt = 11 * 60 + 30
+signalMinutesEt = f_minutes_in_tz(signalTime30, sessionTz)
+signalInsideWindow = signalMinutesEt >= entryStartMinutesEt and signalMinutesEt <= entryEndMinutesEt
+
+dataReady = not na(signalTime30) and not na(signalClose30) and not na(signalSma30) and not na(signalAtr30) and not na(priorDonchianHigh30) and not na(priorDonchianLow30)
+longSignal = dataReady and signalClose30 > priorDonchianHigh30 and signalClose30 > signalSma30
+shortSignal = dataReady and signalClose30 < priorDonchianLow30 and signalClose30 < signalSma30
+
+currentDayKeyEt = year(time, sessionTz) * 10000 + month(time, sessionTz) * 100 + dayofmonth(time, sessionTz)
+
+var int trackedDayKey = na
+var int tradesToday = 0
+var float activeStopPrice = na
+var float activeTargetPrice = na
+var float sessionStartNetProfit = na
+var bool lossLockout = false
+var label chartWarning = na
+
+if na(trackedDayKey) or currentDayKeyEt != trackedDayKey
+    trackedDayKey := currentDayKeyEt
+    tradesToday := 0
+    sessionStartNetProfit := strategy.netprofit
+    lossLockout := false
+
+sessionPnlUsd = strategy.netprofit - nz(sessionStartNetProfit, strategy.netprofit) + strategy.openprofit
+lossLimitActive = maxIntradayLossUsd > 0.0
+lossLimitBreached = lossLimitActive and sessionPnlUsd <= -maxIntradayLossUsd
+if lossLimitBreached
+    lossLockout := true
+
+if isOneMinuteChart
+    if not na(chartWarning)
+        label.delete(chartWarning)
+        chartWarning := na
+else if barstate.islast and na(chartWarning)
+    chartWarning := label.new(
+         bar_index,
+         high,
+         "Use this strategy on a 1-minute chart.\nSignals are computed from 30-minute data.",
+         style = label.style_label_down,
+         textcolor = color.white,
+         color = color.new(color.orange, 0),
+         size = size.small
+     )
+
+tradeAvailableToday = tradesToday < maxTradesPerDay
+canEnter = isOneMinuteChart and newSignalBlock and signalInsideWindow and strategy.position_size == 0 and tradeAvailableToday and not lossLockout
+
+entryQuantity = strategy.default_entry_qty(close)
+exitQuantity = math.max(math.abs(strategy.position_size), entryQuantity)
+longEntryJson = f_build_payload("buy", entryQuantity, "LongBreakout")
+shortEntryJson = f_build_payload("sell", entryQuantity, "ShortBreakout")
+longStopJson = f_build_payload("sell", exitQuantity, "StopLossLong")
+longTargetJson = f_build_payload("sell", exitQuantity, "ProfitTargetLong")
+longHardCloseJson = f_build_payload("sell", exitQuantity, "HardCloseLong")
+longLossLockJson = f_build_payload("sell", exitQuantity, "MaxIntradayLossLong")
+shortStopJson = f_build_payload("buy", exitQuantity, "StopLossShort")
+shortTargetJson = f_build_payload("buy", exitQuantity, "ProfitTargetShort")
+shortHardCloseJson = f_build_payload("buy", exitQuantity, "HardCloseShort")
+shortLossLockJson = f_build_payload("buy", exitQuantity, "MaxIntradayLossShort")
+
+if lossLockout and strategy.position_size > 0
+    strategy.close("Long", comment = "MaxIntradayLossLong", alert_message = longLossLockJson)
+
+if lossLockout and strategy.position_size < 0
+    strategy.close("Short", comment = "MaxIntradayLossShort", alert_message = shortLossLockJson)
+
+if isHardCloseBar and strategy.position_size > 0
+    strategy.close("Long", comment = "HardCloseLong", alert_message = longHardCloseJson)
+
+if isHardCloseBar and strategy.position_size < 0
+    strategy.close("Short", comment = "HardCloseShort", alert_message = shortHardCloseJson)
+
+if canEnter and (longSignal or shortSignal)
+    entryBasisPrice = close
+    stopDistance = signalAtr30 * stopAtrMult
+    targetDistance = signalAtr30 * targetAtrMult
+
+    if longSignal
+        activeStopPrice := entryBasisPrice - stopDistance
+        activeTargetPrice := entryBasisPrice + targetDistance
+        strategy.entry("Long", strategy.long, comment = "LongBreakout", alert_message = longEntryJson)
+    else
+        activeStopPrice := entryBasisPrice + stopDistance
+        activeTargetPrice := entryBasisPrice - targetDistance
+        strategy.entry("Short", strategy.short, comment = "ShortBreakout", alert_message = shortEntryJson)
+
+    tradesToday += 1
+
+    if showDebugLabels
+        labelText = (longSignal ? "LONG" : "SHORT") +
+          "\nSignal bar: " + str.format_time(signalTime30, "yyyy-MM-dd HH:mm", sessionTz) +
+          "\nSignal close: " + str.tostring(signalClose30, format.mintick) +
+          "\nEntry basis: " + str.tostring(entryBasisPrice, format.mintick) +
+          "\nATR14: " + str.tostring(signalAtr30, format.mintick) +
+          "\nDonchian H: " + str.tostring(priorDonchianHigh30, format.mintick) +
+          "\nDonchian L: " + str.tostring(priorDonchianLow30, format.mintick) +
+          "\nSMA50: " + str.tostring(signalSma30, format.mintick)
+        labelStyle = longSignal ? label.style_label_up : label.style_label_down
+        labelColor = longSignal ? color.new(color.green, 0) : color.new(color.red, 0)
+        yLoc = longSignal ? low : high
+        label.new(bar_index, yLoc, labelText, style = labelStyle, textcolor = color.white, color = labelColor, size = size.small)
+
+if strategy.position_size > 0 and not na(activeStopPrice) and not na(activeTargetPrice)
+    strategy.exit("Long Exit", from_entry = "Long", stop = activeStopPrice, limit = activeTargetPrice, comment_loss = "StopLossLong", comment_profit = "ProfitTargetLong", alert_loss = longStopJson, alert_profit = longTargetJson)
+
+if strategy.position_size < 0 and not na(activeStopPrice) and not na(activeTargetPrice)
+    strategy.exit("Short Exit", from_entry = "Short", stop = activeStopPrice, limit = activeTargetPrice, comment_loss = "StopLossShort", comment_profit = "ProfitTargetShort", alert_loss = shortStopJson, alert_profit = shortTargetJson)
+
+if strategy.position_size == 0 and strategy.position_size[1] != 0
+    activeStopPrice := na
+    activeTargetPrice := na
+
+plot(strategy.position_size != 0 ? activeStopPrice : na, "Active Stop", color = color.new(color.red, 0), linewidth = 1, style = plot.style_linebr)
+plot(strategy.position_size != 0 ? activeTargetPrice : na, "Active Target", color = color.new(color.green, 0), linewidth = 1, style = plot.style_linebr)

@@ -8,6 +8,13 @@ build/
 .venv/
 venv/
 output/
+.pytest_cache*/
+.pytest_tmp*/
+.tmp_pytest/
+pytest-cache-files-*/
+scratch_config_tests/
+test_tmp_tick_replayer_*/
+tick_replayer_*/
 # Data files excluded - too large for git. Parquet files live in data/ locally.
 data/
 *.parquet
