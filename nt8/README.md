@@ -1,98 +1,61 @@
-# NinjaTrader 8 Setup
+# NinjaTrader 8 Validation Path
 
-Diese Datei beschreibt den produktiven Einsatz von [PropFirmBreakoutStrategy.cs](/c:/Users/phili/Prop-Firm%20Backtesting%20Engine/nt8/PropFirmBreakoutStrategy.cs) in NinjaTrader 8.
+Dieser Ordner ist jetzt der aktive plattformnative Validierungspfad fuer neue Hypothesen auf `NT8`-Truth-Daten.
 
-## Import
+Die verbindliche Gesamtpipeline steht in [NINJATRADER_VALIDATION_PIPELINE.md](/c:/Users/phili/Prop-Firm%20Backtesting%20Engine/NINJATRADER_VALIDATION_PIPELINE.md).
 
-Es gibt zwei saubere Wege:
+Die verbindliche Datenspezifikation steht in [NT8_DATA_SPEC.md](/c:/Users/phili/Prop-Firm%20Backtesting%20Engine/NT8_DATA_SPEC.md).
 
-1. Direkter Source-Import
-   - Kopiere [PropFirmBreakoutStrategy.cs](/c:/Users/phili/Prop-Firm%20Backtesting%20Engine/nt8/PropFirmBreakoutStrategy.cs) nach:
-     - `Documents\NinjaTrader 8\bin\Custom\Strategies\`
-   - Öffne in NinjaTrader:
-     - `New > NinjaScript Editor`
-   - Klicke `Compile`
+## Aktive Datei
 
-2. Offizieller NinjaScript-ZIP-Import
-   - Wenn du später aus NT8 heraus ein ZIP baust, importierst du es über:
-     - `Tools > Import > NinjaScript...`
+- [DataDumpExporter.cs](/c:/Users/phili/Prop-Firm%20Backtesting%20Engine/nt8/DataDumpExporter.cs)
+- [RawBarDumpExporter.cs](/c:/Users/phili/Prop-Firm%20Backtesting%20Engine/nt8/RawBarDumpExporter.cs)
+- [run_nt8_dual_feed_backtest.py](/c:/Users/phili/Prop-Firm%20Backtesting%20Engine/scripts/run_nt8_dual_feed_backtest.py)
+- [nt8_dual_feed.py](/c:/Users/phili/Prop-Firm%20Backtesting%20Engine/propfirm/execution/nt8_dual_feed.py)
 
-Wichtiger Hinweis:
-- Die aktuelle Repo-Datei ist eine normale `.cs`-Quelldatei, kein exportiertes NT8-Archiv.
-- Für den ersten lokalen Einsatz ist der direkte Copy- und Compile-Weg der einfachste.
+Die fruehere Donchian/SMA-Trendfolge ist archiviert:
 
-## Chart Setup
+- [archive/01_donchian_trend](/c:/Users/phili/Prop-Firm%20Backtesting%20Engine/archive/01_donchian_trend)
 
-Pro Instrument ein eigener Chart mit eigener Strategie-Instanz.
+## Rolle Von NinjaTrader
 
-Gemeinsam:
+- `Python + Databento` bleibt der Research- und Hypothesenpfad.
+- `NinjaTrader + NinjaTrader-Daten` ist die finale Validierungsumgebung fuer die spaetere Ausfuehrung.
+- Eine Python-validierte Strategie ist noch keine freigegebene NT8-Strategie.
+
+## Ziel-Setup
+
+- Eigene Strategie-Instanz pro Instrument
 - `Calculate = OnBarClose`
 - Keine zweite Strategie auf demselben Chart
-- Instrument-spezifische `TickSize` kommt vom Instrument selbst in NT8
-- Trading Hours Template so wählen, dass dein Intraday-Chart die im Research verwendete Session sauber abbildet
+- Trading-Hours-Template und Sessionlogik explizit dokumentieren
+- Datenprovider fuer die Revalidierung einfrieren, bevor OOS und Forward Test starten
 
-Empfohlen:
-- Session-Kontext auf dem Chart prüfen, bevor live gehandelt wird
-- Zeitwerte im Strategie-Dialog gegen die tatsächlich sichtbare Chart-Zeit prüfen
+## Validierungsreihenfolge
 
-## MGC Preset
+1. Python-Research-Truth einfrieren
+2. NinjaTrader-Datenbasis einfrieren
+3. `Feed A`: HTF-Chart-Dump mit `DataDumpExporter`
+4. `Feed B`: 1m-Rohdaten-Dump mit `RawBarDumpExporter`
+5. Dual-Feed-Runner aufsetzen:
+   [run_nt8_dual_feed_backtest.py](/c:/Users/phili/Prop-Firm%20Backtesting%20Engine/scripts/run_nt8_dual_feed_backtest.py)
+6. Signale nur aus `Feed A`, Intrabar-Routing nur aus `Feed B`
+7. IS/OOS strikt getrennt auswerten
+8. Erst danach Slippage-, Drawdown- und Monte-Carlo-Stress
+9. Erst danach Sim/Forward Test auf VPS
 
-Chart:
-- Instrument: `MGC`
-- Bar Type: `Minute`
-- Value: `60`
+## Dual-Feed Regel
 
-Strategie-Parameter:
-- `DonchianLookback = 5`
-- `StopLossATR = 1.5`
-- `TargetATR = 10.0`
-- `StartTime = 090000`
-- `EndTime = 110000`
-- `DailyLossLimitUSD = 400`
+- Keine aktive Pandas-HTF-Rebuild-Logik mehr fuer NT8-Validierung
+- `DataDumpExporter` ist die alleinige Source of Truth fuer Signal-Bars und Indikatoren
+- `RawBarDumpExporter` ist die alleinige Source of Truth fuer 1m-Ausfuehrungsrouting
+- `nt8_dual_feed.py` enthaelt jetzt nur noch ein leeres `generate_signals()`-Template fuer neue Hypothesen
 
-Research-Herkunft:
-- H1-Modell
-- Entry-Fenster `09:00-11:00 ET`
-- Daily-SMA50-Regime-Filter aktiv
+## Mindeststandard Vor Forward Test
 
-## MNQ Preset
-
-Chart:
-- Instrument: `MNQ`
-- Bar Type: `Minute`
-- Value: `30`
-
-Strategie-Parameter:
-- `DonchianLookback = 10`
-- `StopLossATR = 1.5`
-- `TargetATR = 10.0`
-- `StartTime = 103000`
-- `EndTime = 110000`
-- `DailyLossLimitUSD = 400`
-
-Research-Herkunft:
-- M30-Modell
-- Entry-Fenster `10:30-11:00 ET`
-- Daily-SMA50-Regime-Filter aktiv
-
-## Live Hinweise
-
-- Der Strategy-Code berechnet Signale auf `OnBarClose`, also analog zum Research-Modell mit nächster ausführbarer Kerze.
-- Der Daily-Loss-Breaker ruft im `Realtime`-Pfad `CloseStrategy(...)` auf.
-  - Das ist absichtlich hart.
-  - Dadurch werden offene Positionen geschlossen und die Strategie deaktiviert.
-- Im Historical/Analyzer-Fall verwendet der Code stattdessen einen normalen Exit-Fallback.
-
-## Checkliste Vor Live
-
-- Chart-Zeit prüfen: Stimmen `09:00` für MGC und `10:30` für MNQ wirklich mit deiner NT8-Zeitdarstellung überein?
-- Instrument-Mapping prüfen: `MGC` und `MNQ` korrekter Front-/Micro-Kontrakt
-- ATM aus: Die Strategie verwaltet Stop und Target selbst
-- Positionsgröße in NT8 prüfen: Die aktuelle Version setzt keine dynamische Kontraktzahl aus dem Python-Risk-Engine-Modell um
-- Sim-Konto zuerst mehrere Sessions laufen lassen
-
-## Quellen
-
-- NinjaTrader Import: https://ninjatrader.com/support/helpGuides/nt8/import.htm
-- NinjaTrader Export: https://ninjatrader.com/support/helpguides/nt8/export.htm
-- Forum-Hinweis zum manuellen `.cs`-Kopieren in `bin\\Custom\\Strategies`: https://forum.ninjatrader.com/forum/ninjatrader-8/strategy-development/1286343-strategy-builder-files
+- Datenprovider, Contract-Handling, Rollregel und Sessiontemplate sind dokumentiert
+- MNQ und MGC sind einzeln gegen Python plausibilisiert
+- Kombinierte Portfolio-Kennzahlen auf NT8-Daten sind akzeptabel
+- OOS kollabiert nicht
+- Kosten- und Slippage-Stress zerstoeren die Edge nicht
+- Forward Test laeuft auf genau derselben NT8-Umgebung, die spaeter live genutzt wird

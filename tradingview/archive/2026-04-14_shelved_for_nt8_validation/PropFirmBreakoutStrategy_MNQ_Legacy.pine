@@ -1,0 +1,484 @@
+//@version=6
+strategy(
+    "PropFirm Breakout Strategy - MNQ Legacy Frozen",
+    overlay = true,
+    pyramiding = 0,
+    calc_on_every_tick = false,
+    calc_on_order_fills = false,
+    process_orders_on_close = false,
+    commission_type = strategy.commission.cash_per_contract,
+    commission_value = 0.54,
+    margin_long = 5,
+    margin_short = 5,
+    initial_capital = 50000,
+    default_qty_type = strategy.fixed,
+    default_qty_value = 1
+)
+
+// -----------------------------------------------------------------------------
+// MNQ legacy frozen TradingView alignment
+// -----------------------------------------------------------------------------
+// Target reference:
+// - scripts/run_mnq_legacy_frozen.py
+// - configs/default_params_mnq_legacy_frozen.toml
+//
+// This file mirrors the effective Python-frozen path as closely as TradingView
+// allows:
+// - Run on a 30-minute chart.
+// - Session filter: 08:00 -> 15:59 ET.
+// - Entries: next bar open.
+// - Stop/target distance: simple rolling ATR(14), not Wilder RMA.
+// - Risk sizing: $400 risk per trade with 1.5 ATR stop and 10 ATR target.
+// - Daily regime filter: prior session close vs prior SMA(50) of session closes.
+//
+// Important caveat:
+// - The frozen Python run uses the loader's precomputed Donchian arrays
+//   `donchian_high_5` / `donchian_low_5`. The legacy config metadata still says
+//   lookback = 10, but the effective frozen signal path is 5 bars. This script
+//   mirrors the effective frozen path.
+// - TradingView cannot reproduce Python's intrabar slippage lookup or full MFF
+//   lifecycle state. This script aligns the signal, timing, ATR mode, and risk
+//   sizing path, but fills will still be TradingView-native.
+// -----------------------------------------------------------------------------
+
+webhookKey = input.string("", "CrossTrade Webhook Key")
+symbolOverride = input.string("", "CrossTrade Symbol Override")
+sessionTz = input.string("America/New_York", "Session Timezone")
+riskPerTradeUsd = input.float(400.0, "Risk Per Trade USD", minval = 0.01, step = 1.0)
+maxContracts = input.int(50, "Max Contracts", minval = 1)
+showSignalLevels = input.bool(true, "Plot Signal Levels")
+showDiagnostics = input.bool(true, "Show Diagnostics")
+showForensicLabels = input.bool(false, "Show Forensic Labels")
+showForensicTable = input.bool(true, "Show Forensic Table")
+showFocusBarLabels = input.bool(false, "Show Focus Bar Labels")
+forensicFocusDate = input.string("2026-01-21", "Forensic Focus Date")
+
+sessionStartMinutes = 8 * 60
+sessionEndMinutes = 15 * 60 + 59
+signalTfMinutes = 30
+lastBarStartMinutes = sessionEndMinutes - signalTfMinutes + 1
+triggerStartMinutes = 150
+triggerEndMinutes = 180
+timeStopMinute = 475
+effectiveDonchianLookback = 5
+smaLength = 50
+atrLength = 14
+stopAtrMult = 1.5
+targetAtrMult = 10.0
+tickSize = 0.25
+tickValue = 0.5
+evalMaxLossLimitUsd = 2000.0
+riskBufferFraction = 0.25
+
+f_minutes_to_hhmm(int totalMinutes) =>
+    hoursPart = int(math.floor(totalMinutes / 60))
+    minutesPart = totalMinutes % 60
+    str.tostring(hoursPart, "#") + ":" + str.tostring(minutesPart, "00")
+
+f_bar_minutes_tz(string tz) =>
+    hour(time, tz) * 60 + minute(time, tz)
+
+f_is_weekday_tz(string tz) =>
+    dow = dayofweek(time, tz)
+    dow >= dayofweek.monday and dow <= dayofweek.friday
+
+f_is_session_bar(int startMinutes, int endMinutes, string tz) =>
+    barMinutes = f_bar_minutes_tz(tz)
+    f_is_weekday_tz(tz) and barMinutes >= startMinutes and barMinutes <= endMinutes
+
+f_entry_payload(string key, string action, string symbol, int quantity) =>
+    "{\"key\":\"" + key + "\",\"action\":\"" + action + "\",\"symbol\":\"" + symbol + "\",\"quantity\":" + str.tostring(quantity) + "}"
+
+f_close_payload(string key, string symbol) =>
+    "{\"key\":\"" + key + "\",\"action\":\"close\",\"symbol\":\"" + symbol + "\"}"
+
+f_date_text(string tz) =>
+    str.format_time(time, "yyyy-MM-dd", tz)
+
+tradeSymbol = str.length(symbolOverride) > 0 ? symbolOverride : "MNQ"
+isThirtyMinuteChart = timeframe.isminutes and timeframe.multiplier == 30
+barMinutesEt = f_bar_minutes_tz(sessionTz)
+sessionMinute = barMinutesEt - sessionStartMinutes
+currentDateKeyEt = year(time, sessionTz) * 10000 + month(time, sessionTz) * 100 + dayofmonth(time, sessionTz)
+insideResearchSession = f_is_session_bar(sessionStartMinutes, sessionEndMinutes, sessionTz)
+isLastSessionBar = insideResearchSession and barMinutesEt == lastBarStartMinutes
+signalInsideWindow = insideResearchSession and sessionMinute >= triggerStartMinutes and sessionMinute <= triggerEndMinutes
+isFocusDate = f_date_text(sessionTz) == forensicFocusDate
+
+sessionCloseSeries = insideResearchSession ? close : na
+sessionHighSeries = insideResearchSession ? high : na
+sessionLowSeries = insideResearchSession ? low : na
+sessionTrSeries = insideResearchSession ? ta.tr(true) : na
+sessionCloseEvent = isLastSessionBar ? close : na
+
+signalSma = ta.sma(sessionCloseSeries, smaLength)
+signalAtr = ta.sma(sessionTrSeries, atrLength)
+priorDonchianHigh = ta.highest(sessionHighSeries[1], effectiveDonchianLookback)
+priorDonchianLow = ta.lowest(sessionLowSeries[1], effectiveDonchianLookback)
+sessionCloseSma = ta.sma(sessionCloseEvent, smaLength)
+prevSessionClose = ta.valuewhen(not na(sessionCloseEvent), sessionCloseEvent, 1)
+prevSessionSma = ta.valuewhen(not na(sessionCloseEvent), sessionCloseSma, 1)
+sessionCloseCount = int(ta.cum(not na(sessionCloseEvent) ? 1 : 0))
+
+float dailyRegimeBias = 0.0
+if not na(prevSessionSma)
+    dailyRegimeBias := prevSessionClose > prevSessionSma ? 1.0 : prevSessionClose < prevSessionSma ? -1.0 : 0.0
+
+dataReady = insideResearchSession and not na(signalSma) and not na(signalAtr) and not na(priorDonchianHigh) and not na(priorDonchianLow)
+regimeAllowsLong = dailyRegimeBias > 0.0
+regimeAllowsShort = dailyRegimeBias < 0.0
+closeAboveDonchian = dataReady and close > priorDonchianHigh
+closeAboveSma = dataReady and close > signalSma
+closeBelowDonchian = dataReady and close < priorDonchianLow
+closeBelowSma = dataReady and close < signalSma
+rawLongSignal = dataReady and signalInsideWindow and closeAboveDonchian and closeAboveSma and regimeAllowsLong
+rawShortSignal = dataReady and signalInsideWindow and closeBelowDonchian and closeBelowSma and regimeAllowsShort
+
+stopTicks = dataReady ? (signalAtr * stopAtrMult) / tickSize : na
+targetTicks = dataReady ? (signalAtr * targetAtrMult) / tickSize : na
+var float peakNetProfit = 0.0
+peakNetProfit := math.max(peakNetProfit, strategy.netprofit)
+liquidationFloorUsd = peakNetProfit - evalMaxLossLimitUsd
+drawdownBufferUsd = strategy.netprofit - liquidationFloorUsd
+effectiveRiskUsd = math.min(riskPerTradeUsd, math.max(0.0, drawdownBufferUsd * riskBufferFraction))
+contractsFromRisk = dataReady and not na(stopTicks) and stopTicks > 0 ? int(math.floor(effectiveRiskUsd / (stopTicks * tickValue))) : 0
+sizedContracts = int(math.min(maxContracts, contractsFromRisk))
+
+var int trackedDayKey = na
+var int tradesToday = 0
+var int firstSessionBarMinuteEt = na
+var float pendingStopDistance = na
+var float pendingTargetDistance = na
+var int pendingQty = 0
+var int signalCountLong = 0
+var int signalCountShort = 0
+var float activeStopPrice = na
+var float activeTargetPrice = na
+var string lastSignalDirection = "n/a"
+var string lastSignalTimeText = "n/a"
+var float lastSignalClose = na
+var float lastSignalSma = na
+var float lastSignalAtr = na
+var float lastSignalStopTicks = na
+var float lastSignalTargetTicks = na
+var int lastSignalQty = 0
+var float lastSignalDonchianHigh = na
+var float lastSignalDonchianLow = na
+var float lastSignalRegimeBias = na
+var float lastSignalEffectiveRiskUsd = na
+var float lastSignalDrawdownBufferUsd = na
+var float lastSignalLiquidationFloorUsd = na
+var string lastFocusTimeText = "n/a"
+var float lastFocusClose = na
+var float lastFocusSma = na
+var float lastFocusAtr = na
+var float lastFocusDonchianHigh = na
+var float lastFocusDonchianLow = na
+var float lastFocusRegimeBias = na
+var float lastFocusPrevSessionClose = na
+var float lastFocusPrevSessionSma = na
+var float lastFocusEffectiveRiskUsd = na
+var float lastFocusDrawdownBufferUsd = na
+var float lastFocusLiquidationFloorUsd = na
+var float lastFocusStopTicks = na
+var int lastFocusQty = 0
+var bool lastFocusCloseAboveDonchian = false
+var bool lastFocusCloseAboveSma = false
+var bool lastFocusCloseBelowDonchian = false
+var bool lastFocusCloseBelowSma = false
+var bool lastFocusLongAllowed = false
+var bool lastFocusShortAllowed = false
+var bool lastFocusRawLongSignal = false
+var bool lastFocusRawShortSignal = false
+var label chartWarning = na
+var table diagnosticsTable = table.new(position.top_right, 2, 9, border_width = 1)
+var table forensicTable = table.new(position.top_left, 2, 26, border_width = 1)
+
+diagHeaderBg = color.new(color.silver, 10)
+diagCellBg = color.new(color.black, 15)
+diagStatusBg = color.new(color.black, 25)
+
+if isThirtyMinuteChart
+    if not na(chartWarning)
+        label.delete(chartWarning)
+        chartWarning := na
+else if barstate.islast and na(chartWarning)
+    chartWarning := label.new(
+         bar_index,
+         high,
+         "Use this strategy on a 30-minute chart.",
+         style = label.style_label_down,
+         textcolor = color.white,
+         color = color.new(color.orange, 0),
+         size = size.small
+     )
+
+if insideResearchSession and (na(trackedDayKey) or currentDateKeyEt != trackedDayKey)
+    trackedDayKey := currentDateKeyEt
+    tradesToday := 0
+    firstSessionBarMinuteEt := barMinutesEt
+
+if isFocusDate and dataReady and signalInsideWindow
+    lastFocusTimeText := str.format_time(time, "yyyy-MM-dd HH:mm", sessionTz)
+    lastFocusClose := close
+    lastFocusSma := signalSma
+    lastFocusAtr := signalAtr
+    lastFocusDonchianHigh := priorDonchianHigh
+    lastFocusDonchianLow := priorDonchianLow
+    lastFocusRegimeBias := dailyRegimeBias
+    lastFocusPrevSessionClose := prevSessionClose
+    lastFocusPrevSessionSma := prevSessionSma
+    lastFocusEffectiveRiskUsd := effectiveRiskUsd
+    lastFocusDrawdownBufferUsd := drawdownBufferUsd
+    lastFocusLiquidationFloorUsd := liquidationFloorUsd
+    lastFocusStopTicks := stopTicks
+    lastFocusQty := sizedContracts
+    lastFocusCloseAboveDonchian := closeAboveDonchian
+    lastFocusCloseAboveSma := closeAboveSma
+    lastFocusCloseBelowDonchian := closeBelowDonchian
+    lastFocusCloseBelowSma := closeBelowSma
+    lastFocusLongAllowed := regimeAllowsLong
+    lastFocusShortAllowed := regimeAllowsShort
+    lastFocusRawLongSignal := rawLongSignal
+    lastFocusRawShortSignal := rawShortSignal
+
+    if showFocusBarLabels
+        focusText = "FOCUS " + forensicFocusDate +
+          "\nTime: " + lastFocusTimeText +
+          "\nClose: " + str.tostring(lastFocusClose, format.mintick) +
+          "\nSMA50: " + str.tostring(lastFocusSma, format.mintick) +
+          "\nATR14: " + str.tostring(lastFocusAtr, format.mintick) +
+          "\nDonchian H: " + str.tostring(lastFocusDonchianHigh, format.mintick) +
+          "\nDonchian L: " + str.tostring(lastFocusDonchianLow, format.mintick) +
+          "\nPrev Close: " + str.tostring(lastFocusPrevSessionClose, format.mintick) +
+          "\nPrev SMA: " + str.tostring(lastFocusPrevSessionSma, format.mintick) +
+          "\nRegime: " + str.tostring(lastFocusRegimeBias, "#.0") +
+          "\nClose > H: " + str.tostring(lastFocusCloseAboveDonchian) +
+          "\nClose > SMA: " + str.tostring(lastFocusCloseAboveSma) +
+          "\nReg Long: " + str.tostring(lastFocusLongAllowed) +
+          "\nClose < L: " + str.tostring(lastFocusCloseBelowDonchian) +
+          "\nClose < SMA: " + str.tostring(lastFocusCloseBelowSma) +
+          "\nReg Short: " + str.tostring(lastFocusShortAllowed) +
+          "\nRaw Long: " + str.tostring(lastFocusRawLongSignal) +
+          "\nRaw Short: " + str.tostring(lastFocusRawShortSignal) +
+          "\nStopTicks: " + str.tostring(lastFocusStopTicks, "#.00") +
+          "\nQty: " + str.tostring(lastFocusQty) +
+          "\nEffRisk: " + str.tostring(lastFocusEffectiveRiskUsd, "#.00") +
+          "\nDD Buffer: " + str.tostring(lastFocusDrawdownBufferUsd, "#.00") +
+          "\nLiq Floor: " + str.tostring(lastFocusLiquidationFloorUsd, "#.00")
+        label.new(
+             bar_index,
+             high,
+             focusText,
+             style = label.style_label_down,
+             textcolor = color.white,
+             color = color.new(color.blue, 0),
+             size = size.small
+         )
+
+canEnter = isThirtyMinuteChart and strategy.position_size == 0 and tradesToday < 1 and insideResearchSession and sessionMinute < timeStopMinute
+if canEnter and sizedContracts > 0 and (rawLongSignal or rawShortSignal)
+    pendingStopDistance := signalAtr * stopAtrMult
+    pendingTargetDistance := signalAtr * targetAtrMult
+    pendingQty := sizedContracts
+    lastSignalDirection := rawLongSignal ? "LONG" : "SHORT"
+    lastSignalTimeText := str.format_time(time, "yyyy-MM-dd HH:mm", sessionTz)
+    lastSignalClose := close
+    lastSignalSma := signalSma
+    lastSignalAtr := signalAtr
+    lastSignalStopTicks := stopTicks
+    lastSignalTargetTicks := targetTicks
+    lastSignalQty := sizedContracts
+    lastSignalDonchianHigh := priorDonchianHigh
+    lastSignalDonchianLow := priorDonchianLow
+    lastSignalRegimeBias := dailyRegimeBias
+    lastSignalEffectiveRiskUsd := effectiveRiskUsd
+    lastSignalDrawdownBufferUsd := drawdownBufferUsd
+    lastSignalLiquidationFloorUsd := liquidationFloorUsd
+
+    if rawLongSignal
+        signalCountLong += 1
+        strategy.entry(
+             "Long",
+             strategy.long,
+             qty = sizedContracts,
+             comment = "LongBreakout",
+             alert_message = f_entry_payload(webhookKey, "buy", tradeSymbol, sizedContracts)
+         )
+    else
+        signalCountShort += 1
+        strategy.entry(
+             "Short",
+             strategy.short,
+             qty = sizedContracts,
+             comment = "ShortBreakout",
+             alert_message = f_entry_payload(webhookKey, "sell", tradeSymbol, sizedContracts)
+         )
+
+    tradesToday += 1
+
+    if showForensicLabels
+        labelText = lastSignalDirection +
+          "\nTime: " + lastSignalTimeText +
+          "\nClose: " + str.tostring(lastSignalClose, format.mintick) +
+          "\nSMA50: " + str.tostring(lastSignalSma, format.mintick) +
+          "\nATR14: " + str.tostring(lastSignalAtr, format.mintick) +
+          "\nDonchian H: " + str.tostring(lastSignalDonchianHigh, format.mintick) +
+          "\nDonchian L: " + str.tostring(lastSignalDonchianLow, format.mintick) +
+          "\nStopTicks: " + str.tostring(lastSignalStopTicks, "#.00") +
+          "\nTargetTicks: " + str.tostring(lastSignalTargetTicks, "#.00") +
+          "\nQty: " + str.tostring(lastSignalQty) +
+          "\nRegime: " + str.tostring(lastSignalRegimeBias, "#.0") +
+          "\nEffRisk: " + str.tostring(lastSignalEffectiveRiskUsd, "#.00") +
+          "\nDD Buffer: " + str.tostring(lastSignalDrawdownBufferUsd, "#.00")
+        label.new(
+             bar_index,
+             rawLongSignal ? low : high,
+             labelText,
+             style = rawLongSignal ? label.style_label_up : label.style_label_down,
+             textcolor = color.white,
+             color = rawLongSignal ? color.new(color.green, 0) : color.new(color.red, 0),
+             size = size.small
+         )
+
+newPositionFilled = strategy.position_size != 0 and strategy.position_size[1] == 0 and pendingQty > 0 and not na(pendingStopDistance) and not na(pendingTargetDistance)
+if newPositionFilled
+    if strategy.position_size > 0
+        activeStopPrice := strategy.position_avg_price - pendingStopDistance
+        activeTargetPrice := strategy.position_avg_price + pendingTargetDistance
+    else
+        activeStopPrice := strategy.position_avg_price + pendingStopDistance
+        activeTargetPrice := strategy.position_avg_price - pendingTargetDistance
+    pendingStopDistance := na
+    pendingTargetDistance := na
+    pendingQty := 0
+
+closeJson = f_close_payload(webhookKey, tradeSymbol)
+
+if strategy.position_size > 0 and not na(activeStopPrice) and not na(activeTargetPrice)
+    strategy.exit(
+         "Long Exit",
+         from_entry = "Long",
+         stop = activeStopPrice,
+         limit = activeTargetPrice,
+         comment_loss = "StopLossLong",
+         comment_profit = "ProfitTargetLong",
+         alert_loss = closeJson,
+         alert_profit = closeJson
+     )
+
+if strategy.position_size < 0 and not na(activeStopPrice) and not na(activeTargetPrice)
+    strategy.exit(
+         "Short Exit",
+         from_entry = "Short",
+         stop = activeStopPrice,
+         limit = activeTargetPrice,
+         comment_loss = "StopLossShort",
+         comment_profit = "ProfitTargetShort",
+         alert_loss = closeJson,
+         alert_profit = closeJson
+     )
+
+if isLastSessionBar and strategy.position_size != 0
+    strategy.close_all(comment = "HardClose", alert_message = closeJson, immediately = true)
+
+if strategy.position_size == 0 and strategy.position_size[1] != 0
+    activeStopPrice := na
+    activeTargetPrice := na
+
+if barstate.islast and showDiagnostics
+    bool sessionStartsLate = not na(firstSessionBarMinuteEt) and firstSessionBarMinuteEt > sessionStartMinutes
+    string readinessText = "Ready"
+    color readinessColor = color.new(color.green, 70)
+    string regimeText = dailyRegimeBias > 0.0 ? "LONG" : dailyRegimeBias < 0.0 ? "SHORT" : "NEUTRAL"
+    if not isThirtyMinuteChart
+        readinessText := "Blocked: use 30m chart"
+        readinessColor := color.new(color.red, 70)
+    else if sessionStartsLate
+        readinessText := "Blocked: chart session starts at " + f_minutes_to_hhmm(firstSessionBarMinuteEt) + " ET"
+        readinessColor := color.new(color.red, 70)
+    else if sessionCloseCount < smaLength
+        readinessText := "Blocked: warmup " + str.tostring(sessionCloseCount) + "/" + str.tostring(smaLength)
+        readinessColor := color.new(color.red, 70)
+    else if sizedContracts < 1 and dataReady
+        readinessText := "Blocked: qty < 1 from risk sizing"
+        readinessColor := color.new(color.red, 70)
+
+    table.cell(diagnosticsTable, 0, 0, "Check", text_color = color.white, bgcolor = diagHeaderBg)
+    table.cell(diagnosticsTable, 1, 0, "Status", text_color = color.white, bgcolor = diagHeaderBg)
+    table.cell(diagnosticsTable, 0, 1, "Chart", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(diagnosticsTable, 1, 1, isThirtyMinuteChart ? "OK (30m)" : "FAIL", text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(diagnosticsTable, 0, 2, "Session", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(diagnosticsTable, 1, 2, "08:00-15:59 ET", text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(diagnosticsTable, 0, 3, "Warmup", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(diagnosticsTable, 1, 3, str.tostring(sessionCloseCount) + " / " + str.tostring(smaLength), text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(diagnosticsTable, 0, 4, "Donchian", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(diagnosticsTable, 1, 4, "Effective " + str.tostring(effectiveDonchianLookback), text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(diagnosticsTable, 0, 5, "ATR Mode", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(diagnosticsTable, 1, 5, "Simple SMA14", text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(diagnosticsTable, 0, 6, "Regime", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(diagnosticsTable, 1, 6, regimeText, text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(diagnosticsTable, 0, 7, "Signals", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(diagnosticsTable, 1, 7, "L " + str.tostring(signalCountLong) + " / S " + str.tostring(signalCountShort), text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(diagnosticsTable, 0, 8, "Readiness", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(diagnosticsTable, 1, 8, readinessText, bgcolor = readinessColor)
+
+if barstate.islast and showForensicTable
+    table.cell(forensicTable, 0, 0, "Metric", text_color = color.white, bgcolor = diagHeaderBg)
+    table.cell(forensicTable, 1, 0, "Value", text_color = color.white, bgcolor = diagHeaderBg)
+    table.cell(forensicTable, 0, 1, "Direction", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(forensicTable, 1, 1, lastSignalDirection, text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(forensicTable, 0, 2, "Signal Time", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(forensicTable, 1, 2, lastSignalTimeText, text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(forensicTable, 0, 3, "Close", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(forensicTable, 1, 3, na(lastSignalClose) ? "n/a" : str.tostring(lastSignalClose, format.mintick), text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(forensicTable, 0, 4, "SMA50", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(forensicTable, 1, 4, na(lastSignalSma) ? "n/a" : str.tostring(lastSignalSma, format.mintick), text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(forensicTable, 0, 5, "ATR14", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(forensicTable, 1, 5, na(lastSignalAtr) ? "n/a" : str.tostring(lastSignalAtr, format.mintick), text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(forensicTable, 0, 6, "Donchian H", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(forensicTable, 1, 6, na(lastSignalDonchianHigh) ? "n/a" : str.tostring(lastSignalDonchianHigh, format.mintick), text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(forensicTable, 0, 7, "Donchian L", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(forensicTable, 1, 7, na(lastSignalDonchianLow) ? "n/a" : str.tostring(lastSignalDonchianLow, format.mintick), text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(forensicTable, 0, 8, "StopTicks", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(forensicTable, 1, 8, na(lastSignalStopTicks) ? "n/a" : str.tostring(lastSignalStopTicks, "#.00"), text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(forensicTable, 0, 9, "Qty", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(forensicTable, 1, 9, str.tostring(lastSignalQty), text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(forensicTable, 0, 10, "Regime", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(forensicTable, 1, 10, na(lastSignalRegimeBias) ? "n/a" : str.tostring(lastSignalRegimeBias, "#.0"), text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(forensicTable, 0, 11, "EffRisk", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(forensicTable, 1, 11, na(lastSignalEffectiveRiskUsd) ? "n/a" : str.tostring(lastSignalEffectiveRiskUsd, "#.00"), text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(forensicTable, 0, 12, "DD Buffer", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(forensicTable, 1, 12, na(lastSignalDrawdownBufferUsd) ? "n/a" : str.tostring(lastSignalDrawdownBufferUsd, "#.00"), text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(forensicTable, 0, 13, "Liq Floor", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(forensicTable, 1, 13, na(lastSignalLiquidationFloorUsd) ? "n/a" : str.tostring(lastSignalLiquidationFloorUsd, "#.00"), text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(forensicTable, 0, 14, "Focus Date", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(forensicTable, 1, 14, forensicFocusDate, text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(forensicTable, 0, 15, "Focus Time", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(forensicTable, 1, 15, lastFocusTimeText, text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(forensicTable, 0, 16, "Focus Close", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(forensicTable, 1, 16, na(lastFocusClose) ? "n/a" : str.tostring(lastFocusClose, format.mintick), text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(forensicTable, 0, 17, "Focus SMA50", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(forensicTable, 1, 17, na(lastFocusSma) ? "n/a" : str.tostring(lastFocusSma, format.mintick), text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(forensicTable, 0, 18, "Focus DnH", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(forensicTable, 1, 18, na(lastFocusDonchianHigh) ? "n/a" : str.tostring(lastFocusDonchianHigh, format.mintick), text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(forensicTable, 0, 19, "Focus Regime", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(forensicTable, 1, 19, na(lastFocusRegimeBias) ? "n/a" : str.tostring(lastFocusRegimeBias, "#.0"), text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(forensicTable, 0, 20, "Prev Close", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(forensicTable, 1, 20, na(lastFocusPrevSessionClose) ? "n/a" : str.tostring(lastFocusPrevSessionClose, format.mintick), text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(forensicTable, 0, 21, "Prev SMA", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(forensicTable, 1, 21, na(lastFocusPrevSessionSma) ? "n/a" : str.tostring(lastFocusPrevSessionSma, format.mintick), text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(forensicTable, 0, 22, "C>DnH / C>SMA", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(forensicTable, 1, 22, str.tostring(lastFocusCloseAboveDonchian) + " / " + str.tostring(lastFocusCloseAboveSma), text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(forensicTable, 0, 23, "Reg L / Raw L", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(forensicTable, 1, 23, str.tostring(lastFocusLongAllowed) + " / " + str.tostring(lastFocusRawLongSignal), text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(forensicTable, 0, 24, "C<DnL / C<SMA", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(forensicTable, 1, 24, str.tostring(lastFocusCloseBelowDonchian) + " / " + str.tostring(lastFocusCloseBelowSma), text_color = color.white, bgcolor = diagStatusBg)
+    table.cell(forensicTable, 0, 25, "Reg S / Raw S", text_color = color.white, bgcolor = diagCellBg)
+    table.cell(forensicTable, 1, 25, str.tostring(lastFocusShortAllowed) + " / " + str.tostring(lastFocusRawShortSignal), text_color = color.white, bgcolor = diagStatusBg)
+
+plot(showSignalLevels ? signalSma : na, "Signal SMA50", color = color.orange, linewidth = 2, style = plot.style_stepline)
+plot(showSignalLevels ? priorDonchianHigh : na, "Prior Donchian High", color = color.lime, linewidth = 2, style = plot.style_stepline)
+plot(showSignalLevels ? priorDonchianLow : na, "Prior Donchian Low", color = color.red, linewidth = 2, style = plot.style_stepline)
+plot(strategy.position_size != 0 ? activeStopPrice : na, "Active Stop", color = color.new(color.red, 0), linewidth = 1, style = plot.style_linebr)
+plot(strategy.position_size != 0 ? activeTargetPrice : na, "Active Target", color = color.new(color.green, 0), linewidth = 1, style = plot.style_linebr)
